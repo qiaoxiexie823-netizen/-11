@@ -16,9 +16,11 @@ import android.provider.Settings;
 import android.view.Gravity;
 import android.widget.Button;
 import android.widget.CheckBox;
+import android.widget.ArrayAdapter;
 import android.widget.LinearLayout;
 import android.widget.NumberPicker;
 import android.widget.ScrollView;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -32,6 +34,7 @@ public class MainActivity extends Activity {
     private NumberPicker rowsPicker;
     private NumberPicker columnsPicker;
     private NumberPicker kindsPicker;
+    private Spinner speedSpinner;
     private CheckBox autoMode;
 
     @Override
@@ -88,6 +91,29 @@ public class MainActivity extends Activity {
         kindsPicker = addPicker(pickers, "图标种类", 4, 9, preferences.getInt("kinds", 5));
         root.addView(pickers, fullWidth());
 
+        LinearLayout speedRow = new LinearLayout(this);
+        speedRow.setOrientation(LinearLayout.HORIZONTAL);
+        speedRow.setGravity(Gravity.CENTER_VERTICAL);
+        speedRow.setPadding(0, dp(6), 0, dp(6));
+        TextView speedLabel = text("滑动速度", 16, Color.DKGRAY);
+        speedRow.addView(speedLabel, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 0.32f));
+        speedSpinner = new Spinner(this);
+        String[] speedOptions = {
+                "稳定（约1.5～2.0秒/步）",
+                "快速（约0.8～1.2秒/步）",
+                "极速（约0.5～0.8秒/步）"
+        };
+        ArrayAdapter<String> speedAdapter = new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_item, speedOptions);
+        speedAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        speedSpinner.setAdapter(speedAdapter);
+        speedSpinner.setSelection(Math.max(0, Math.min(2,
+                preferences.getInt("speed_mode", 0))));
+        speedRow.addView(speedSpinner, new LinearLayout.LayoutParams(0,
+                dp(52), 0.68f));
+        root.addView(speedRow, fullWidth());
+
         autoMode = new CheckBox(this);
         autoMode.setText("开启自动滑动（关闭时只显示建议步骤）");
         autoMode.setTextSize(16);
@@ -123,6 +149,11 @@ public class MainActivity extends Activity {
         note.setPadding(dp(14), dp(12), dp(14), dp(12));
         note.setBackground(roundRect(Color.rgb(245, 245, 245), 13));
         root.addView(note, withMargins(fullWidth(), dp(12)));
+
+        TextView maker = text("深情制作", 16, Color.rgb(93, 60, 180));
+        maker.setGravity(Gravity.CENTER);
+        maker.setPadding(0, dp(12), 0, dp(4));
+        root.addView(maker, fullWidth());
 
         setContentView(scroll);
     }
@@ -199,6 +230,7 @@ public class MainActivity extends Activity {
                 .putInt("rows", rowsPicker.getValue())
                 .putInt("columns", columnsPicker.getValue())
                 .putInt("kinds", kindsPicker.getValue())
+                .putInt("speed_mode", speedSpinner.getSelectedItemPosition())
                 .putBoolean("auto_mode", autoMode.isChecked())
                 .apply();
     }
@@ -218,6 +250,8 @@ public class MainActivity extends Activity {
         service.putExtra(ScreenCaptureService.EXTRA_ROWS, rowsPicker.getValue());
         service.putExtra(ScreenCaptureService.EXTRA_COLUMNS, columnsPicker.getValue());
         service.putExtra(ScreenCaptureService.EXTRA_KINDS, kindsPicker.getValue());
+        service.putExtra(ScreenCaptureService.EXTRA_SPEED_MODE,
+                speedSpinner.getSelectedItemPosition());
         service.putExtra(ScreenCaptureService.EXTRA_AUTO_MODE, autoMode.isChecked());
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(service);
         else startService(service);

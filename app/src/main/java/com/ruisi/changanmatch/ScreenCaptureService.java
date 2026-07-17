@@ -46,11 +46,11 @@ public class ScreenCaptureService extends Service {
     public static final String EXTRA_ROWS = "rows";
     public static final String EXTRA_COLUMNS = "columns";
     public static final String EXTRA_KINDS = "kinds";
+    public static final String EXTRA_SPEED_MODE = "speedMode";
     public static final String EXTRA_AUTO_MODE = "autoMode";
 
     private static final String CHANNEL_ID = "match3_capture";
     private static final int NOTIFICATION_ID = 9342;
-    private static final long FRAME_INTERVAL_MS = 360;
     private static final double STABLE_THRESHOLD = 0.055;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -76,6 +76,12 @@ public class ScreenCaptureService extends Service {
     private int rows = 8;
     private int columns = 7;
     private int kinds = 5;
+    private int speedMode;
+    private long frameIntervalMs = 450;
+    private long actionCooldownMs = 1400;
+    private long sameBoardCooldownMs = 4500;
+    private int requiredStableFrames = 3;
+    private String speedLabel = "稳定";
     private volatile boolean autoMode;
     private volatile boolean calibrating;
     private long lastFrameAt;
@@ -106,6 +112,8 @@ public class ScreenCaptureService extends Service {
         rows = clamp(intent.getIntExtra(EXTRA_ROWS, 8), 4, 10);
         columns = clamp(intent.getIntExtra(EXTRA_COLUMNS, 7), 4, 10);
         kinds = clamp(intent.getIntExtra(EXTRA_KINDS, 5), 4, 9);
+        speedMode = clamp(intent.getIntExtra(EXTRA_SPEED_MODE, 0), 0, 2);
+        applySpeedMode(speedMode);
         autoMode = intent.getBooleanExtra(EXTRA_AUTO_MODE, false);
 
         int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED);
@@ -196,7 +204,7 @@ public class ScreenCaptureService extends Service {
         Image image = reader.acquireLatestImage();
         if (image == null) return;
         long now = System.currentTimeMillis();
-        if (calibrating || processing.get() || now - lastFrameAt < FRAME_INTERVAL_MS) {
+        if (calibrating || processing.get() || now - lastFrameAt < frameIntervalMs) {
             image.close();
             return;
         }
@@ -258,8 +266,8 @@ public class ScreenCaptureService extends Service {
             return;
         }
         stableFrames++;
-        if (stableFrames < 2) {
-            updateStatus("正在确认棋盘稳定…");
+        if (stableFrames < requiredStableFrames) {
+            updateStatus("正在确认棋盘稳定…（" + speedLabel + "）");
             return;
         }
 
@@ -270,7 +278,7 @@ public class ScreenCaptureService extends Service {
         }
         String signature = analyzer.signature(board);
         long now = System.currentTimeMillis();
-        if (signature.equals(lastActionSignature) && now - lastActionAt < 3800) {
+        if (signature.equals(lastActionSignature) && now - lastActionAt < sameBoardCooldownMs) {
             updateStatus("等待方块落位…");
             return;
         }
@@ -291,7 +299,7 @@ public class ScreenCaptureService extends Service {
             updateStatus("自动权限已关闭，已切换为提示模式");
             return;
         }
-        if (now - lastActionAt < 1050) return;
+        if (now - lastActionAt < actionCooldownMs) return;
 
         float startX = (float) (boardRect.left + (move.column1 + 0.5) * boardRect.width() / columns);
         float startY = (float) (boardRect.top + (move.row1 + 0.5) * boardRect.height() / rows);
@@ -326,6 +334,28 @@ public class ScreenCaptureService extends Service {
                 preferences.getFloat("board_top", 0.255f),
                 preferences.getFloat("board_right", 0.99f),
                 preferences.getFloat("board_bottom", 0.775f));
+    }
+
+    private void applySpeedMode(int mode) {
+        if (mode == 2) {
+            frameIntervalMs = 180;
+            actionCooldownMs = 520;
+            sameBoardCooldownMs = 2200;
+            requiredStableFrames = 2;
+            speedLabel = "极速";
+        } else if (mode == 1) {
+            frameIntervalMs = 280;
+            actionCooldownMs = 850;
+            sameBoardCooldownMs = 3200;
+            requiredStableFrames = 2;
+            speedLabel = "快速";
+        } else {
+            frameIntervalMs = 450;
+            actionCooldownMs = 1400;
+            sameBoardCooldownMs = 4500;
+            requiredStableFrames = 3;
+            speedLabel = "稳定";
+        }
     }
 
     private void showControlOverlay() {
