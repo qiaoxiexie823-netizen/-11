@@ -65,7 +65,6 @@ jobs:
     private void dispatchTapInternal(float x, float y, int attempt, TapCallback callback) {
         Path path = new Path();
         path.moveTo(x, y);
-        // 极短移动比单点路径在部分国产系统上更稳定，视觉上仍是一次点击。
         path.lineTo(x + 0.6f, y + 0.6f);
         GestureDescription.StrokeDescription stroke =
                 new GestureDescription.StrokeDescription(path, 0, 115);
@@ -140,7 +139,6 @@ jobs:
                     if (clickQuestion.equals(pendingClickQuestion)) {
                         pendingClickQuestion = "";
                     }
-                    // 题目已经切换时，不再用上一题的回调覆盖当前提示。
                     if (!clickQuestion.equals(lastQuestion)) return;
                     if (success) {
                         lastClickedQuestion = clickQuestion;
@@ -182,7 +180,6 @@ jobs:
                     best = new AnswerTarget(line.getText(), box.centerX(), box.centerY());
                 }
 
-                // 部分游戏字体会把一个选项拆成两行，合并相邻行再次匹配。
                 if (i + 1 < blockLines.size()) {
                     Text.Line next = blockLines.get(i + 1);
                     Rect nextBox = next.getBoundingBox();
@@ -217,12 +214,10 @@ jobs:
 
 '''
           service = service[:start] + target_replacement + service[end:]
-
           service = service.replace(
               '        if (line.equals(answer)) return 1.0;\n',
               '        if (line.equals(answer)) return 1.0;\n' +
               '        if (answer.matches("[abcd]") && line.startsWith(answer)) return 0.995;\n', 1)
-
           service_path.write_text(service, encoding='utf-8')
 
           gradle_path = Path('app/build.gradle')
@@ -283,3 +278,5 @@ jobs:
             ShenqingAssistant-1.6.3-ReliableClick.apk.sha256
           if-no-files-found: error
           retention-days: 30
+
+# retrigger: 2026-07-18
