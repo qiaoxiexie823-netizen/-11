@@ -1,4 +1,4 @@
-name: Build Banquet Match3 APK
+name: Build Shenqing Assistant APK
 
 on:
   workflow_dispatch:
@@ -7,94 +7,36 @@ on:
     paths-ignore:
       - "README.md"
       - "使用说明.txt"
-  pull_request:
-    branches: [ "main" ]
+      - "generated-apk/**"
 
 permissions:
   contents: write
 
 jobs:
-  patch-embedded-quiz:
-    name: Connect embedded quiz entry
-    if: github.event_name == 'pull_request' && github.head_ref == 'feature/embed-quiz-bank'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: feature/embed-quiz-bank
-          fetch-depth: 0
-      - name: Connect top quiz tab to internal activity
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('app/src/main/java/com/ruisi/changanmatch/MainActivity.java')
-          text = path.read_text(encoding='utf-8')
-          if 'startActivity(new Intent(this, QuizActivity.class));' in text:
-              print('Quiz entry already connected')
-              raise SystemExit(0)
-          start = text.index('    private void renderQuizTab(LinearLayout root) {')
-          end = text.index('    private void activateOfflineLicense(EditText input, TextView status) {')
-          replacement = '''    private void renderQuizTab(LinearLayout root) {
-              LinearLayout card = verticalCard(Color.WHITE, 20);
-              card.setPadding(dp(18), dp(18), dp(18), dp(18));
-              root.addView(card, cardParams());
-
-              TextView title = text("长安题库答题器", 21, PURPLE_DARK);
-              title.setGravity(Gravity.CENTER);
-              card.addView(title, fullWidth());
-
-              TextView description = text(
-                      "已内置 3603 道《长安幻想》题库和中文 OCR。识题、查题和答案匹配全部在手机本地完成，不上传题目内容。",
-                      14, TEXT_MUTED);
-              description.setGravity(Gravity.CENTER);
-              description.setLineSpacing(0, 1.2f);
-              description.setPadding(0, dp(10), 0, dp(12));
-              card.addView(description, fullWidth());
-
-              TextView bankState = text("题库状态：已内置 3603 道", 13, GREEN);
-              bankState.setGravity(Gravity.CENTER);
-              bankState.setPadding(dp(10), dp(6), dp(10), dp(6));
-              bankState.setBackground(roundRect(Color.rgb(237, 249, 242), 15));
-              card.addView(bankState, withMargins(fullWidth(), dp(4)));
-
-              Button openButton = primaryButton("进入内置答题器");
-              openButton.setOnClickListener(v -> openQuizAssistant());
-              card.addView(openButton, buttonParams());
-
-              TextView note = text(
-                      "进入后可先输入“浪里白条”手动测试，也可授权悬浮窗并启动屏幕识题。无需安装第二个 App。",
-                      13, TEXT_MUTED);
-              note.setGravity(Gravity.CENTER);
-              note.setPadding(dp(5), dp(10), dp(5), 0);
-              card.addView(note, fullWidth());
-          }
-
-          private void openQuizAssistant() {
-              startActivity(new Intent(this, QuizActivity.class));
-          }
-
-'''
-          path.write_text(text[:start] + replacement + text[end:], encoding='utf-8')
-          PY
-          rm -f .github/workflows/import-quiz-bank.yml .github/workflows/patch-embedded-quiz.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          if ! git diff --cached --quiet; then
-            git commit -m "Finish embedded 3603-question quiz integration"
-            git push origin HEAD:feature/embed-quiz-bank
-          fi
-
   build:
-    name: Build debug APK
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    name: Build 深情助手 1.6.0
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Record workflow run
+        shell: bash
+        run: |
+          mkdir -p generated-apk
+          printf 'run_id=%s\ncommit=%s\nartifact=ShenqingAssistant-1.6.0-APK\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_SHA" > generated-apk/manifest.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add generated-apk/manifest.txt
+          if ! git diff --cached --quiet; then
+            git commit -m "Record 深情助手 1.6.0 build run"
+            git push origin HEAD:${GITHUB_REF_NAME}
+          fi
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -124,15 +66,15 @@ jobs:
         shell: bash
         run: |
           test -f app/build/outputs/apk/debug/app-debug.apk
-          cp app/build/outputs/apk/debug/app-debug.apk ChanganBanquetMatch3-debug.apk
-          sha256sum ChanganBanquetMatch3-debug.apk > ChanganBanquetMatch3-debug.apk.sha256
+          cp app/build/outputs/apk/debug/app-debug.apk ShenqingAssistant-1.6.0-debug.apk
+          sha256sum ShenqingAssistant-1.6.0-debug.apk > ShenqingAssistant-1.6.0-debug.apk.sha256
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ChanganBanquetMatch3-APK
+          name: ShenqingAssistant-1.6.0-APK
           path: |
-            ChanganBanquetMatch3-debug.apk
-            ChanganBanquetMatch3-debug.apk.sha256
+            ShenqingAssistant-1.6.0-debug.apk
+            ShenqingAssistant-1.6.0-debug.apk.sha256
           if-no-files-found: error
           retention-days: 30
