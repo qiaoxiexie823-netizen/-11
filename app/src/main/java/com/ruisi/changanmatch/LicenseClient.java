@@ -10,6 +10,7 @@ import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
@@ -34,7 +35,7 @@ final class LicenseClient {
      */
     private static final Dns IPV4_FIRST_DNS = hostname -> {
         List<InetAddress> resolved = new ArrayList<>(Dns.SYSTEM.lookup(hostname));
-        resolved.sort((left, right) -> {
+        Collections.sort(resolved, (left, right) -> {
             boolean leftIsIpv4 = left instanceof Inet4Address;
             boolean rightIsIpv4 = right instanceof Inet4Address;
             if (leftIsIpv4 == rightIsIpv4) return 0;
