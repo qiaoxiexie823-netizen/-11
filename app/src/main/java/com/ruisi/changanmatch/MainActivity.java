@@ -13,16 +13,20 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.text.InputType;
 import android.view.Gravity;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
-import android.widget.ArrayAdapter;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.NumberPicker;
 import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import java.util.Locale;
 
 public class MainActivity extends Activity {
     private static final int REQ_CAPTURE = 1001;
@@ -36,14 +40,139 @@ public class MainActivity extends Activity {
     private NumberPicker kindsPicker;
     private Spinner speedSpinner;
     private CheckBox autoMode;
+    private boolean mainUiReady;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         projectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         preferences = getSharedPreferences("match3_settings", MODE_PRIVATE);
-        buildUi();
-        requestNotificationPermissionIfNeeded();
+        showDisclaimer();
+    }
+
+    private void showDisclaimer() {
+        String message =
+                "本软件为非官方辅助工具，仅供学习、交流和个人测试使用。\n\n" +
+                "自动识别、悬浮窗及无障碍自动滑动等功能，可能不符合游戏运营方的用户协议或风控规则，可能导致警告、功能限制、数据异常或账号封禁。使用前请自行阅读并遵守相关协议，建议不要在重要账号上使用。\n\n" +
+                "因使用或无法使用本软件产生的账号封禁、虚拟物品或数据损失、设备异常、网络费用、经济损失以及其他直接或间接后果，由使用者自行承担。开发者不提供账号安全保证，并在法律允许范围内不承担相关责任。\n\n" +
+                "本软件不包含修改游戏数据、绕过检测或破解功能。继续使用即表示你已理解上述风险并自愿承担。";
+
+        new AlertDialog.Builder(this)
+                .setTitle("使用免责声明")
+                .setMessage(message)
+                .setCancelable(false)
+                .setPositiveButton("我已阅读并同意", (dialog, which) -> showLicenseGate())
+                .setNegativeButton("不同意并退出", (dialog, which) -> finishAndRemoveTask())
+                .show();
+    }
+
+    private void showLicenseGate() {
+        mainUiReady = false;
+        permissionState = null;
+
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(24), dp(34), dp(24), dp(28));
+        scroll.addView(root);
+
+        TextView title = text("深情助手", 30, Color.rgb(66, 40, 116));
+        title.setGravity(Gravity.CENTER);
+        root.addView(title, fullWidth());
+
+        TextView subtitle = text("卡密验证", 18, Color.rgb(93, 60, 180));
+        subtitle.setGravity(Gravity.CENTER);
+        subtitle.setPadding(0, dp(6), 0, dp(20));
+        root.addView(subtitle, fullWidth());
+
+        TextView description = text(
+                "请输入卡密后验证。首次验证会自动绑定当前设备，一张卡密仅限一台设备使用。",
+                15, Color.DKGRAY);
+        description.setLineSpacing(0, 1.18f);
+        description.setPadding(dp(16), dp(14), dp(16), dp(14));
+        description.setBackground(roundRect(Color.rgb(248, 246, 255), 16));
+        root.addView(description, withMargins(fullWidth(), dp(8)));
+
+        EditText licenseInput = new EditText(this);
+        licenseInput.setSingleLine(true);
+        licenseInput.setTextSize(17);
+        licenseInput.setHint("请输入卡密");
+        licenseInput.setInputType(InputType.TYPE_CLASS_TEXT |
+                InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
+        licenseInput.setPadding(dp(16), 0, dp(16), 0);
+        licenseInput.setBackground(roundStroke(Color.WHITE,
+                Color.rgb(150, 130, 190), 13));
+        String savedKey = preferences.getString("license_key", "");
+        licenseInput.setText(savedKey);
+        root.addView(licenseInput, licenseInputParams());
+
+        TextView status = text(
+                savedKey.isEmpty() ? "尚未验证" : "正在验证已保存的卡密…",
+                14, savedKey.isEmpty() ? Color.GRAY : Color.rgb(190, 80, 35));
+        status.setGravity(Gravity.CENTER);
+        status.setPadding(0, dp(8), 0, dp(4));
+        root.addView(status, fullWidth());
+
+        Button verifyButton = primaryButton("验证并进入");
+        verifyButton.setOnClickListener(v ->
+                verifyFromGate(licenseInput, verifyButton, status));
+        root.addView(verifyButton, buttonParams());
+
+        TextView deviceText = text(
+                "设备编号：" + LicenseClient.shortDeviceId(this),
+                12, Color.GRAY);
+        deviceText.setGravity(Gravity.CENTER);
+        deviceText.setPadding(0, dp(14), 0, 0);
+        root.addView(deviceText, fullWidth());
+
+        TextView maker = text("深情制作", 16, Color.rgb(93, 60, 180));
+        maker.setGravity(Gravity.CENTER);
+        maker.setPadding(0, dp(28), 0, dp(4));
+        root.addView(maker, fullWidth());
+
+        setContentView(scroll);
+
+        if (!savedKey.isEmpty()) {
+            verifyFromGate(licenseInput, verifyButton, status);
+        }
+    }
+
+    private void verifyFromGate(EditText input, Button button, TextView status) {
+        String licenseKey = input.getText().toString().trim().toUpperCase(Locale.US);
+        if (licenseKey.isEmpty()) {
+            input.setError("请输入卡密");
+            return;
+        }
+
+        input.setEnabled(false);
+        button.setEnabled(false);
+        button.setText("正在验证…");
+        status.setText("正在连接卡密服务器…");
+        status.setTextColor(Color.rgb(190, 80, 35));
+
+        LicenseClient.verify(this, licenseKey, (success, message, expiresAt) -> {
+            input.setEnabled(true);
+            button.setEnabled(true);
+            button.setText("验证并进入");
+            status.setText(message);
+            status.setTextColor(success
+                    ? Color.rgb(20, 125, 72)
+                    : Color.rgb(190, 45, 45));
+
+            if (success) {
+                saveVerifiedLicense(licenseKey, expiresAt);
+                mainUiReady = true;
+                buildUi();
+                requestNotificationPermissionIfNeeded();
+            }
+        });
+    }
+
+    private void saveVerifiedLicense(String key, String expiresAt) {
+        preferences.edit()
+                .putString("license_key", key)
+                .putString("license_expires_at", expiresAt == null ? "" : expiresAt)
+                .apply();
     }
 
     private void buildUi() {
@@ -53,10 +182,26 @@ public class MainActivity extends Activity {
         root.setPadding(dp(24), dp(18), dp(24), dp(28));
         scroll.addView(root);
 
-        TextView title = text("长安幻想·宴会消消乐助手", 27, Color.rgb(66, 40, 116));
+        TextView title = text("深情助手", 28, Color.rgb(66, 40, 116));
         title.setGravity(Gravity.CENTER);
-        title.setPadding(0, 0, 0, dp(8));
+        title.setPadding(0, 0, 0, dp(2));
         root.addView(title, fullWidth());
+
+        TextView subtitle = text("长安幻想·宴会消消乐", 17, Color.rgb(93, 60, 180));
+        subtitle.setGravity(Gravity.CENTER);
+        subtitle.setPadding(0, 0, 0, dp(8));
+        root.addView(subtitle, fullWidth());
+
+        String savedKey = preferences.getString("license_key", "");
+        String expiresAt = preferences.getString("license_expires_at", "");
+        TextView licenseInfo = text(
+                "卡密：" + maskLicenseKey(savedKey) +
+                        (expiresAt.isEmpty() ? "" : "\n到期时间：" + expiresAt + "（UTC）"),
+                13, Color.rgb(20, 125, 72));
+        licenseInfo.setGravity(Gravity.CENTER);
+        licenseInfo.setPadding(dp(12), dp(9), dp(12), dp(9));
+        licenseInfo.setBackground(roundRect(Color.rgb(239, 250, 244), 13));
+        root.addView(licenseInfo, withMargins(fullWidth(), dp(5)));
 
         TextView intro = text(
                 "在手机本地识别宴会消消乐棋盘，计算最佳相邻交换。默认只提示；开启自动模式后，通过安卓无障碍服务执行滑动。\n\n首次使用：授权悬浮窗 → 开启无障碍 → 设置棋盘行列 → 开始识别 → 切回游戏后点击浮窗“标定”。",
@@ -122,7 +267,7 @@ public class MainActivity extends Activity {
         root.addView(autoMode, fullWidth());
 
         Button startButton = primaryButton("③ 开始识别棋盘");
-        startButton.setOnClickListener(v -> startCaptureRequest());
+        startButton.setOnClickListener(v -> verifySavedLicenseAndStart(startButton));
         root.addView(startButton, buttonParams());
 
         Button stopButton = secondaryButton("停止运行");
@@ -143,8 +288,21 @@ public class MainActivity extends Activity {
         });
         root.addView(resetButton, buttonParams());
 
+        Button changeLicenseButton = secondaryButton("更换卡密");
+        changeLicenseButton.setOnClickListener(v -> {
+            Intent stop = new Intent(this, ScreenCaptureService.class);
+            stop.setAction(ScreenCaptureService.ACTION_STOP);
+            startService(stop);
+            preferences.edit()
+                    .remove("license_key")
+                    .remove("license_expires_at")
+                    .apply();
+            showLicenseGate();
+        });
+        root.addView(changeLicenseButton, buttonParams());
+
         TextView note = text(
-                "已按宴会消消乐真实画面预设为 8 行×7 列、5 类图标。建议先关闭自动模式测试；粉红切片、数字和闪光属于消除动画，助手会等待画面稳定后再计算。所有识别均在本机完成。",
+                "已按宴会消消乐真实画面预设为 8 行×7 列、5 类图标。建议先关闭自动模式测试；粉红切片、数字和闪光属于消除动画，助手会等待画面稳定后再计算。所有识别均在本机完成，卡密验证仅提交卡密和匿名设备编号。",
                 14, Color.rgb(90, 90, 90));
         note.setPadding(dp(14), dp(12), dp(14), dp(12));
         note.setBackground(roundRect(Color.rgb(245, 245, 245), 13));
@@ -156,6 +314,36 @@ public class MainActivity extends Activity {
         root.addView(maker, fullWidth());
 
         setContentView(scroll);
+        updatePermissionState();
+    }
+
+    private void verifySavedLicenseAndStart(Button button) {
+        String key = preferences.getString("license_key", "");
+        if (key.isEmpty()) {
+            Toast.makeText(this, "请先验证卡密", Toast.LENGTH_SHORT).show();
+            showLicenseGate();
+            return;
+        }
+
+        button.setEnabled(false);
+        button.setText("正在验证卡密…");
+        LicenseClient.verify(this, key, (success, message, expiresAt) -> {
+            button.setEnabled(true);
+            button.setText("③ 开始识别棋盘");
+            if (success) {
+                saveVerifiedLicense(key, expiresAt);
+                startCaptureRequest();
+            } else {
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+                showLicenseGate();
+            }
+        });
+    }
+
+    private String maskLicenseKey(String key) {
+        if (key == null || key.isEmpty()) return "未记录";
+        if (key.length() <= 8) return key;
+        return key.substring(0, 4) + "****" + key.substring(key.length() - 4);
     }
 
     private NumberPicker addPicker(LinearLayout parent, String label, int min, int max, int value) {
@@ -179,10 +367,13 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        updatePermissionState();
+        if (mainUiReady && permissionState != null) {
+            updatePermissionState();
+        }
     }
 
     private void updatePermissionState() {
+        if (permissionState == null) return;
         boolean overlay = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this);
         boolean accessibility = AutomationAccessibilityService.isReady();
         permissionState.setText("悬浮窗：" + (overlay ? "已授权" : "未授权") +
@@ -303,6 +494,13 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(54));
         p.setMargins(0, dp(6), 0, dp(6));
+        return p;
+    }
+
+    private LinearLayout.LayoutParams licenseInputParams() {
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(56));
+        p.setMargins(0, dp(18), 0, dp(4));
         return p;
     }
 
