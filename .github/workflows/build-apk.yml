@@ -59,6 +59,15 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      - name: Apply quiz performance and complete-interface patches
+        shell: bash
+        run: |
+          gradle --no-daemon --stacktrace :app:patchEmbeddedQuizEntry :app:patchQuizPerformance
+          python3 tools/patch_full_auto_quiz_164.py
+          grep -q 'QUIZ_LAYOUT_V164' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
+          grep -q '开始答题' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
+          grep -q '下一关' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
+
       - name: Build APK and capture diagnostics
         shell: bash
         run: |
