@@ -59,9 +59,22 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Build APK
+      - name: Build APK and capture diagnostics
         shell: bash
-        run: gradle --no-daemon --stacktrace clean assembleDebug
+        run: |
+          set +e
+          gradle --no-daemon --stacktrace clean assembleDebug > generated-apk/build-1.6.3.log 2>&1
+          CODE=$?
+          tail -n 260 generated-apk/build-1.6.3.log > generated-apk/build-1.6.3-tail.log
+          if [ "$CODE" -ne 0 ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add generated-apk/build-1.6.3-tail.log
+            git commit -m "Save 深情助手 1.6.3 build error" || true
+            git pull --rebase origin ${GITHUB_REF_NAME}
+            git push origin HEAD:${GITHUB_REF_NAME}
+            exit "$CODE"
+          fi
 
       - name: Prepare downloadable APK
         shell: bash
