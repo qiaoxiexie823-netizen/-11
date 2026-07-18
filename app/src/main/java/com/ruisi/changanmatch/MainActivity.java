@@ -19,7 +19,6 @@ import android.os.CountDownTimer;
 import android.provider.Settings;
 import android.text.InputType;
 import android.view.Gravity;
-import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -33,6 +32,8 @@ import android.widget.Toast;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.Locale;
 
 public class MainActivity extends Activity {
@@ -43,10 +44,10 @@ public class MainActivity extends Activity {
     private static final int TAB_QUIZ = 1;
     private static final int TAB_LICENSE = 2;
 
-    private static final String OFFLINE_TEST_KEY = "SQCS-2026-TEST-0001";
     private static final String PREF_ACTIVE_KEY = "offline_active_license_key";
-    private static final String PREF_TEST_EXPIRES_AT = "offline_test_expires_at";
-    private static final long OFFLINE_DURATION_MS = 7L * 24L * 60L * 60L * 1000L;
+    private static final String PREF_LICENSE_EXPIRES_AT = "offline_license_expires_at";
+    private static final String PREF_LICENSE_PERMANENT = "offline_license_permanent";
+    private static final String PREF_LICENSE_TYPE = "offline_license_type";
 
     private static final int PURPLE = Color.rgb(91, 61, 170);
     private static final int PURPLE_DARK = Color.rgb(61, 41, 112);
@@ -196,13 +197,14 @@ public class MainActivity extends Activity {
         card.setPadding(dp(18), dp(18), dp(18), dp(18));
         root.addView(card, cardParams());
 
-        TextView cardTitle = text(isOfflineLicenseValid() ? "卡密信息" : "离线卡密激活",
+        OfflineLicense.Result active = readActiveLicense();
+        TextView cardTitle = text(active.valid ? "卡密信息" : "离线卡密激活",
                 21, PURPLE_DARK);
         cardTitle.setGravity(Gravity.CENTER);
         card.addView(cardTitle, fullWidth());
 
         TextView description = text(
-                "卡密只在本机验证，不连接服务器。请复制本机号交给卡密制作方，再输入生成的卡密完成激活。",
+                "卡密只在本机验证，不连接服务器。复制本机号交给卡密生成器，再输入生成的卡密完成激活。",
                 14, TEXT_MUTED);
         description.setGravity(Gravity.CENTER);
         description.setLineSpacing(0, 1.18f);
@@ -228,8 +230,14 @@ public class MainActivity extends Activity {
         copyButton.setOnClickListener(v -> copyMachineId(machineId));
         deviceBox.addView(copyButton, compactButtonParams());
 
-        if (isOfflineLicenseValid()) {
-            TextView activeState = text("卡密已激活，可在上方查看剩余时间", 14, GREEN);
+        if (active.valid) {
+            String expiryText = active.permanent
+                    ? "永久有效"
+                    : new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA)
+                    .format(new Date(active.expiresAtMillis));
+            TextView activeState = text(
+                    "已激活：" + active.typeLabel + "\n有效期：" + expiryText,
+                    14, GREEN);
             activeState.setGravity(Gravity.CENTER);
             activeState.setPadding(0, dp(14), 0, dp(7));
             card.addView(activeState, fullWidth());
@@ -242,10 +250,10 @@ public class MainActivity extends Activity {
 
         EditText licenseInput = new EditText(this);
         licenseInput.setSingleLine(true);
-        licenseInput.setTextSize(16);
-        licenseInput.setHint("请输入离线卡密");
+        licenseInput.setTextSize(15);
+        licenseInput.setHint("请粘贴生成的离线卡密");
         licenseInput.setInputType(InputType.TYPE_CLASS_TEXT |
-                InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         licenseInput.setPadding(dp(16), 0, dp(16), 0);
         licenseInput.setBackground(roundStroke(Color.rgb(252, 251, 255),
                 Color.rgb(188, 177, 220), 14));
@@ -417,30 +425,31 @@ public class MainActivity extends Activity {
     }
 
     private void activateOfflineLicense(EditText input, TextView status) {
-        String key = input.getText().toString().trim().toUpperCase(Locale.US);
-        if (!OFFLINE_TEST_KEY.equals(key)) {
-            input.setError("卡密不正确");
-            status.setText("离线卡密验证失败");
+        String key = input.getText().toString().trim();
+        OfflineLicense.Result result = OfflineLicense.verify(
+                key, getMachineId(), System.currentTimeMillis());
+        if (!result.valid) {
+            input.setError(result.message);
+            status.setText(result.message);
             status.setTextColor(Color.rgb(190, 45, 45));
             return;
         }
 
-        long now = System.currentTimeMillis();
-        long expiresAt = preferences.getLong(PREF_TEST_EXPIRES_AT, 0L);
-        if (expiresAt <= 0L) {
-            expiresAt = now + OFFLINE_DURATION_MS;
-            preferences.edit().putLong(PREF_TEST_EXPIRES_AT, expiresAt).apply();
-        }
-        if (now >= expiresAt) {
-            status.setText("该离线卡密已到期");
-            status.setTextColor(Color.rgb(190, 45, 45));
-            return;
-        }
+        preferences.edit()
+                .putString(PREF_ACTIVE_KEY, key)
+                .putLong(PREF_LICENSE_EXPIRES_AT, result.expiresAtMillis)
+                .putBoolean(PREF_LICENSE_PERMANENT, result.permanent)
+                .putString(PREF_LICENSE_TYPE, result.typeLabel)
+                .apply();
 
-        preferences.edit().putString(PREF_ACTIVE_KEY, key).apply();
         Toast.makeText(this, "激活成功", Toast.LENGTH_SHORT).show();
         requestNotificationPermissionIfNeeded();
         buildShell(TAB_MATCH);
+    }
+
+    private OfflineLicense.Result readActiveLicense() {
+        String key = preferences.getString(PREF_ACTIVE_KEY, "");
+        return OfflineLicense.verify(key, getMachineId(), System.currentTimeMillis());
     }
 
     private String getMachineId() {
@@ -478,19 +487,25 @@ public class MainActivity extends Activity {
 
     private void updateTopCountdown() {
         if (countdownView == null) return;
-        if (!isOfflineLicenseValid()) {
+        OfflineLicense.Result result = readActiveLicense();
+        if (!result.valid) {
             countdownView.setText("卡密未激活");
             countdownView.setTextColor(Color.rgb(190, 45, 45));
             countdownView.setBackground(roundRect(Color.rgb(255, 236, 236), 15));
             return;
         }
-        startLicenseCountdown();
+        if (result.permanent) {
+            countdownView.setText("卡密：永久有效");
+            countdownView.setTextColor(GREEN);
+            countdownView.setBackground(roundRect(Color.rgb(237, 249, 242), 15));
+            return;
+        }
+        startLicenseCountdown(result.expiresAtMillis);
     }
 
-    private void startLicenseCountdown() {
+    private void startLicenseCountdown(long expiresAtMillis) {
         stopLicenseTimer();
-        long expiresAt = preferences.getLong(PREF_TEST_EXPIRES_AT, 0L);
-        long remaining = expiresAt - System.currentTimeMillis();
+        long remaining = expiresAtMillis - System.currentTimeMillis();
         if (remaining <= 0L) {
             showExpiredState();
             return;
@@ -550,9 +565,7 @@ public class MainActivity extends Activity {
     }
 
     private boolean isOfflineLicenseValid() {
-        String activeKey = preferences.getString(PREF_ACTIVE_KEY, "");
-        long expiresAt = preferences.getLong(PREF_TEST_EXPIRES_AT, 0L);
-        return OFFLINE_TEST_KEY.equals(activeKey) && expiresAt > System.currentTimeMillis();
+        return readActiveLicense().valid;
     }
 
     private NumberPicker addPicker(LinearLayout parent, String label,
@@ -612,7 +625,7 @@ public class MainActivity extends Activity {
 
     private void startCaptureRequest() {
         if (!isOfflineLicenseValid()) {
-            Toast.makeText(this, "离线卡密已到期", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "离线卡密已到期或无效", Toast.LENGTH_LONG).show();
             showExpiredState();
             return;
         }
