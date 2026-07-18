@@ -1,3 +1,3 @@
-run_id=29630177352
-commit=1c17e8a65619f4fb812b2acb64eb30e880f60938
+run_id=29630246560
+commit=ca232bbc62bba25f86a359aaac238190c597bfe0
 artifact=ShenqingAssistant-1.6.0-APK
