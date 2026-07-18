@@ -1,3 +1,166 @@
 plugins {
     id 'com.android.application' version '8.7.3' apply false
 }
+
+project(':app') {
+    plugins.withId('com.android.application') {
+        android {
+            defaultConfig {
+                versionCode 13
+                versionName "1.6.3"
+            }
+        }
+
+        def patchReliableQuizClick = tasks.register('patchReliableQuizClick') {
+            doLast {
+                File serviceFile = file('src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java')
+                String service = serviceFile.getText('UTF-8')
+                if (service.contains('pendingClickQuestion')) return
+
+                service = service.replace(
+                        '    private int consecutiveMisses;\n',
+                        '    private int consecutiveMisses;\n' +
+                        '    private String pendingClickQuestion = "";\n')
+
+                service = service.replace(
+                        '        if (match.question.equals(lastClickedQuestion) || now - lastClickAt < CLICK_COOLDOWN_MS) {\n' +
+                        '            return;\n' +
+                        '        }\n',
+                        '        if (match.question.equals(lastClickedQuestion) ||\n' +
+                        '                match.question.equals(pendingClickQuestion) ||\n' +
+                        '                now - lastClickAt < CLICK_COOLDOWN_MS) {\n' +
+                        '            return;\n' +
+                        '        }\n')
+
+                String oldDispatch = '''        if (AutomationAccessibilityService.performTap(screenX, screenY)) {
+            lastClickedQuestion = match.question;
+            lastClickAt = now;
+            updateOverlay("答案：" + match.answer + "\\n已自动点击");
+        }
+'''
+                String newDispatch = '''        final String clickQuestion = match.question;
+        final String clickAnswer = match.answer;
+        pendingClickQuestion = clickQuestion;
+        lastClickAt = now;
+        updateOverlay("答案：" + clickAnswer + "\\n正在自动点击…");
+
+        boolean queued = AutomationAccessibilityService.performTap(screenX, screenY, success ->
+                mainHandler.post(() -> {
+                    if (clickQuestion.equals(pendingClickQuestion)) {
+                        pendingClickQuestion = "";
+                    }
+                    if (!clickQuestion.equals(lastQuestion)) return;
+                    if (success) {
+                        lastClickedQuestion = clickQuestion;
+                        updateOverlay("答案：" + clickAnswer + "\\n已自动点击");
+                    } else {
+                        lastClickAt = 0L;
+                        updateOverlay("答案：" + clickAnswer + "\\n点击未生效，正在重试");
+                    }
+                }));
+        if (!queued) {
+            pendingClickQuestion = "";
+            lastClickAt = 0L;
+            updateOverlay("答案：" + clickAnswer + "\\n自动点击权限未连接");
+        }
+'''
+                if (!service.contains(oldDispatch)) {
+                    throw new GradleException('无法定位自动点击提交代码')
+                }
+                service = service.replace(oldDispatch, newDispatch)
+
+                service = service.replace(
+                        '                lastClickedQuestion = "";\n' +
+                        '                updateOverlay(autoClick',
+                        '                lastClickedQuestion = "";\n' +
+                        '                pendingClickQuestion = "";\n' +
+                        '                updateOverlay(autoClick')
+                service = service.replace(
+                        '            lastClickedQuestion = "";\n' +
+                        '            updateOverlay("答案："',
+                        '            lastClickedQuestion = "";\n' +
+                        '            pendingClickQuestion = "";\n' +
+                        '            updateOverlay("答案："')
+
+                String targetStartMarker = '    private AnswerTarget findAnswerTarget(Text result, String answerText) {'
+                String scoreStartMarker = '    private double answerLineScore(String line, String answer) {'
+                int targetStart = service.indexOf(targetStartMarker)
+                int scoreStart = service.indexOf(scoreStartMarker)
+                if (targetStart < 0 || scoreStart <= targetStart) {
+                    throw new GradleException('无法定位答案选项匹配代码')
+                }
+
+                String targetReplacement = '''    private AnswerTarget findAnswerTarget(Text result, String answerText) {
+        String[] answers = answerText.split("\\s*/\\s*");
+        AnswerTarget best = null;
+        double bestScore = 0.0;
+
+        for (Text.TextBlock block : result.getTextBlocks()) {
+            List<Text.Line> blockLines = block.getLines();
+            for (int i = 0; i < blockLines.size(); i++) {
+                Text.Line line = blockLines.get(i);
+                Rect box = line.getBoundingBox();
+                if (box == null || box.centerY() < ocrBitmapHeight * 0.28f) continue;
+
+                double lineScore = bestAnswerCandidateScore(line.getText(), answers);
+                lineScore += Math.min(0.03,
+                        box.centerY() / (double) Math.max(1, ocrBitmapHeight) * 0.03);
+                if (lineScore > bestScore) {
+                    bestScore = lineScore;
+                    best = new AnswerTarget(line.getText(), box.centerX(), box.centerY());
+                }
+
+                if (i + 1 < blockLines.size()) {
+                    Text.Line next = blockLines.get(i + 1);
+                    Rect nextBox = next.getBoundingBox();
+                    if (nextBox != null && nextBox.top - box.bottom < ocrBitmapHeight * 0.08f) {
+                        Rect combinedBox = new Rect(box);
+                        combinedBox.union(nextBox);
+                        String combinedText = line.getText() + next.getText();
+                        double combinedScore = bestAnswerCandidateScore(combinedText, answers) + 0.015;
+                        if (combinedScore > bestScore) {
+                            bestScore = combinedScore;
+                            best = new AnswerTarget(combinedText,
+                                    combinedBox.centerX(), combinedBox.centerY());
+                        }
+                    }
+                }
+            }
+        }
+        return bestScore >= 0.74 ? best : null;
+    }
+
+    private double bestAnswerCandidateScore(String candidateText, String[] answers) {
+        String candidate = QuestionBank.normalize(candidateText);
+        if (candidate.isEmpty()) return 0.0;
+        double best = 0.0;
+        for (String answer : answers) {
+            String normalizedAnswer = QuestionBank.normalize(answer);
+            if (normalizedAnswer.isEmpty()) continue;
+            best = Math.max(best, answerLineScore(candidate, normalizedAnswer));
+        }
+        return best;
+    }
+
+'''
+                service = service.substring(0, targetStart) + targetReplacement +
+                        service.substring(scoreStart)
+                service = service.replace(
+                        '        if (line.equals(answer)) return 1.0;\n',
+                        '        if (line.equals(answer)) return 1.0;\n' +
+                        '        if (answer.matches("[abcd]") && line.startsWith(answer)) return 0.995;\n')
+
+                serviceFile.write(service, 'UTF-8')
+            }
+        }
+
+        afterEvaluate {
+            patchReliableQuizClick.configure {
+                mustRunAfter tasks.named('patchQuizPerformance')
+            }
+            tasks.named('preBuild').configure {
+                dependsOn patchReliableQuizClick
+            }
+        }
+    }
+}
