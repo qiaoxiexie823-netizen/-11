@@ -1,0 +1,333 @@
+name: Optimize Quiz Speed 1.6.2
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - ".github/workflows/optimize-quiz-speed-1.6.2.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  optimize-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply quiz performance optimizations
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          service_path = Path('app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java')
+          service = service_path.read_text(encoding='utf-8')
+
+          service = service.replace(
+              '    private static final int NOTIFICATION_ID = 8232;\n',
+              '    private static final int NOTIFICATION_ID = 8232;\n'
+              '    private static final long OCR_INTERVAL_MS = 420L;\n'
+              '    private static final long CLICK_COOLDOWN_MS = 650L;\n'
+              '    private static final int OCR_MAX_WIDTH = 1080;\n'
+          )
+          service = service.replace(
+              '    private final AtomicBoolean processing = new AtomicBoolean(false);\n',
+              '    private final AtomicBoolean processing = new AtomicBoolean(false);\n'
+              '    private volatile boolean pendingLatestFrame;\n'
+          )
+          service = service.replace(
+              '    private String lastClickedQuestion = "";\n',
+              '    private String lastClickedQuestion = "";\n'
+              '    private int consecutiveMisses;\n'
+          )
+
+          start = service.index('    private void onImageAvailable(ImageReader reader) {')
+          end = service.index('    private Bitmap imageToBitmap(Image image) {')
+          service = service[:start] + '''    private void onImageAvailable(ImageReader reader) {
+        if (reader == null) return;
+        long now = System.currentTimeMillis();
+        if (processing.get() || now - lastProcessAt < OCR_INTERVAL_MS) {
+            pendingLatestFrame = true;
+            Image stale = reader.acquireLatestImage();
+            if (stale != null) stale.close();
+            return;
+        }
+
+        Image image = reader.acquireLatestImage();
+        if (image == null) return;
+        processing.set(true);
+        pendingLatestFrame = false;
+        lastProcessAt = now;
+
+        Bitmap bitmap = null;
+        try {
+            bitmap = imageToBitmap(image);
+        } catch (Exception ignored) {
+        } finally {
+            image.close();
+        }
+        if (bitmap == null) {
+            processing.set(false);
+            scheduleLatestFrame();
+            return;
+        }
+
+        Bitmap prepared = prepareBitmap(bitmap);
+        if (prepared != bitmap) bitmap.recycle();
+        InputImage inputImage = InputImage.fromBitmap(prepared, 0);
+        Task<Text> task = recognizer.process(inputImage);
+        task.addOnSuccessListener(this::handleOcrResult)
+                .addOnFailureListener(error -> updateOverlay("识别失败，正在重试…"))
+                .addOnCompleteListener(done -> {
+                    prepared.recycle();
+                    processing.set(false);
+                    scheduleLatestFrame();
+                });
+    }
+
+    private void scheduleLatestFrame() {
+        if (!pendingLatestFrame || captureHandler == null || imageReader == null) return;
+        pendingLatestFrame = false;
+        long delay = Math.max(5L, OCR_INTERVAL_MS -
+                (System.currentTimeMillis() - lastProcessAt));
+        captureHandler.postDelayed(() -> onImageAvailable(imageReader), delay);
+    }
+
+''' + service[end:]
+
+          service = service.replace(
+              '        int top = centerOnly ? Math.round(source.getHeight() * 0.12f) : 0;\n'
+              '        int bottom = centerOnly\n'
+              '                ? Math.round(source.getHeight() * 0.90f)\n',
+              '        int top = centerOnly ? Math.round(source.getHeight() * 0.08f) : 0;\n'
+              '        int bottom = centerOnly\n'
+              '                ? Math.round(source.getHeight() * 0.92f)\n'
+          )
+          service = service.replace('        int maxWidth = 1600;\n', '        int maxWidth = OCR_MAX_WIDTH;\n')
+
+          start = service.index('    private void handleOcrResult(Text result) {')
+          end = service.index('    private void tryAutoClickAnswer(Text result, QuestionBank.Match match) {')
+          service = service[:start] + '''    private void handleOcrResult(Text result) {
+        List<String> lines = new ArrayList<>();
+        for (Text.TextBlock block : result.getTextBlocks()) {
+            for (Text.Line line : block.getLines()) {
+                String value = line.getText().trim();
+                if (!value.isEmpty()) lines.add(value);
+            }
+        }
+
+        QuestionBank.Match match = questionBank.findBest(lines, result.getText());
+        if (match == null) {
+            consecutiveMisses++;
+            if (consecutiveMisses >= 2) {
+                lastQuestion = "";
+                lastClickedQuestion = "";
+                updateOverlay(autoClick
+                        ? "正在识别下一题…\n自动点击已开启"
+                        : "正在识别下一题…\n长按悬浮窗停止");
+            }
+            return;
+        }
+
+        consecutiveMisses = 0;
+        if (!match.question.equals(lastQuestion)) {
+            lastQuestion = match.question;
+            lastClickedQuestion = "";
+            updateOverlay("答案：" + match.answer +
+                    "\n匹配 " + Math.round(match.score * 100) + "%" +
+                    (autoClick ? " · 等待点击" : ""));
+        }
+
+        if (autoClick) {
+            tryAutoClickAnswer(result, match);
+        }
+    }
+
+''' + service[end:]
+
+          service = service.replace('now - lastClickAt < 1200L',
+                                    'now - lastClickAt < CLICK_COOLDOWN_MS')
+          service = service.replace(
+              '            updateOverlay("答案：" + match.answer + "\\n已自动点击：" + target.text);',
+              '            updateOverlay("答案：" + match.answer + "\\n已自动点击");'
+          )
+          service = service.replace(
+              '                            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,',
+              '                            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN |\n'
+              '                            WindowManager.LayoutParams.FLAG_SECURE,'
+          )
+          service_path.write_text(service, encoding='utf-8')
+
+          bank_path = Path('app/src/main/java/com/ruisi/changanmatch/QuestionBank.java')
+          bank = bank_path.read_text(encoding='utf-8')
+
+          start = bank.index('    private List<String> makeSegments(List<String> lines, String fullText) {')
+          end = bank.index('    private Match matchSegment(String rawSegment) {')
+          bank = bank[:start] + '''    private List<String> makeSegments(List<String> lines, String fullText) {
+        List<String> output = new ArrayList<>();
+        int lineCount = Math.min(lines.size(), 24);
+        for (int i = 0; i < lineCount && output.size() < 60; i++) {
+            String current = lines.get(i);
+            if (normalize(current).length() < 2) continue;
+            output.add(current);
+            if (i + 1 < lineCount && output.size() < 60) {
+                output.add(current + lines.get(i + 1));
+            }
+            if (i + 2 < lineCount && output.size() < 60) {
+                output.add(current + lines.get(i + 1) + lines.get(i + 2));
+            }
+        }
+        if (fullText != null && fullText.length() <= 360 && output.size() < 60) {
+            output.add(fullText);
+        }
+        return output;
+    }
+
+''' + bank[end:]
+
+          start = bank.index('    private Match matchSegment(String rawSegment) {')
+          end = bank.index('    public static String normalize(String input) {')
+          bank = bank[:start] + '''    private Match matchSegment(String rawSegment) {
+        String segment = normalize(rawSegment);
+        if (segment.length() < 2) return null;
+
+        Set<String> segmentGrams = grams(segment);
+        Map<Integer, Integer> overlapCount = new HashMap<>();
+        for (String gram : segmentGrams) {
+            List<Integer> ids = gramIndex.get(gram);
+            if (ids == null) continue;
+            for (Integer id : ids) overlapCount.merge(id, 1, Integer::sum);
+        }
+        if (overlapCount.isEmpty()) return null;
+
+        Match contained = null;
+        for (Integer id : overlapCount.keySet()) {
+            Entry entry = entries.get(id);
+            if (entry.normalized.length() >= 3 && segment.contains(entry.normalized)) {
+                double score = 0.998 + Math.min(0.001,
+                        entry.normalized.length() / 10000.0);
+                if (contained == null || entry.normalized.length() >
+                        normalize(contained.question).length()) {
+                    contained = new Match(entry.question, entry.answer, score);
+                }
+            }
+        }
+        if (contained != null) return contained;
+
+        if (segment.length() >= 4) {
+            Match partial = null;
+            for (Integer id : overlapCount.keySet()) {
+                Entry entry = entries.get(id);
+                if (entry.normalized.contains(segment)) {
+                    double ratio = segment.length() /
+                            (double) Math.max(1, entry.normalized.length());
+                    double score = Math.min(0.96, 0.78 + ratio * 0.18);
+                    if (partial == null || score > partial.score) {
+                        partial = new Match(entry.question, entry.answer, score);
+                    }
+                }
+            }
+            if (partial != null) return partial;
+        }
+
+        List<Map.Entry<Integer, Integer>> candidates =
+                new ArrayList<>(overlapCount.entrySet());
+        candidates.sort((left, right) ->
+                Integer.compare(right.getValue(), left.getValue()));
+
+        Match best = null;
+        int limit = Math.min(100, candidates.size());
+        for (int i = 0; i < limit; i++) {
+            Map.Entry<Integer, Integer> count = candidates.get(i);
+            Entry entry = entries.get(count.getKey());
+            if (entry.normalized.length() < 3) continue;
+            double dice = (2.0 * count.getValue()) /
+                    Math.max(1, entry.grams.size() + segmentGrams.size());
+            double lengthRatio = Math.min(entry.normalized.length(), segment.length()) /
+                    (double) Math.max(entry.normalized.length(), segment.length());
+            double edit = similarity(entry.normalized, segment);
+            double score = Math.max(dice,
+                    dice * 0.56 + edit * 0.34 + lengthRatio * 0.10);
+
+            if (entry.normalized.length() >= 8) {
+                String head = entry.normalized.substring(0, 4);
+                String tail = entry.normalized.substring(entry.normalized.length() - 4);
+                if (segment.contains(head)) score += 0.06;
+                if (segment.contains(tail)) score += 0.06;
+            }
+            score = Math.min(0.997, score);
+            if (best == null || score > best.score) {
+                best = new Match(entry.question, entry.answer, score);
+            }
+        }
+        return best;
+    }
+
+''' + bank[end:]
+          bank_path.write_text(bank, encoding='utf-8')
+
+          gradle_path = Path('app/build.gradle')
+          gradle = gradle_path.read_text(encoding='utf-8')
+          gradle = re.sub(r'versionCode\s+\d+', 'versionCode 12', gradle, count=1)
+          gradle = re.sub(r'versionName\s+"[^"]+"', 'versionName "1.6.2"', gradle, count=1)
+          gradle_path.write_text(gradle, encoding='utf-8')
+          PY
+
+      - name: Commit optimized source
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java \
+                  app/src/main/java/com/ruisi/changanmatch/QuestionBank.java \
+                  app/build.gradle
+          git commit -m "Optimize quiz recognition latency for 1.6.2"
+          git push origin HEAD:main
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android API 35
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build optimized APK
+        shell: bash
+        run: gradle --no-daemon --stacktrace clean assembleDebug
+
+      - name: Prepare optimized APK
+        shell: bash
+        run: |
+          test -f app/build/outputs/apk/debug/app-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk ShenqingAssistant-1.6.2-Speed.apk
+          sha256sum ShenqingAssistant-1.6.2-Speed.apk > ShenqingAssistant-1.6.2-Speed.apk.sha256
+
+      - name: Upload optimized APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShenqingAssistant-1.6.2-Speed-APK
+          path: |
+            ShenqingAssistant-1.6.2-Speed.apk
+            ShenqingAssistant-1.6.2-Speed.apk.sha256
+          if-no-files-found: error
+          retention-days: 30
