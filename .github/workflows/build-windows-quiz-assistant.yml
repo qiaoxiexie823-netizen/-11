@@ -58,7 +58,7 @@ jobs:
         shell: pwsh
         run: |
           python windows-assistant/patch_numpy_ocr_fix.py
-          python -c "from pathlib import Path; t=Path('windows-assistant/main.py').read_text(encoding='utf-8'); assert 'APP_VERSION = \"2.1.1\"' in t; assert 'def _sequence' in t; assert 'getattr(output, \"txts\") or []' not in t; print('NumPy OCR fix verified')"
+          python -c "from pathlib import Path; t=Path('windows-assistant/main.py').read_text(encoding='utf-8'); assert 'APP_VERSION = \"2.1.1\"' in t; assert 'raw_texts = getattr(output, \"txts\", None)' in t; assert 'getattr(output, \"txts\") or []' not in t; assert 'getattr(output, \"boxes\") or []' not in t; assert 'getattr(output, \"scores\") or []' not in t; print('NumPy OCR fix verified')"
 
       - name: Verify question bank and source
         shell: pwsh
