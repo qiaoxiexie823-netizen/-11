@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">宴会消消乐助手</string>
+    <string name="app_name">深情助手</string>
     <string name="accessibility_name">宴会消消乐自动滑动</string>
     <string name="accessibility_desc">根据本地屏幕分析结果执行相邻方块滑动。仅在用户主动开启自动模式时运行。</string>
 </resources>
