@@ -1,0 +1,201 @@
+from pathlib import Path
+
+SERVICE_PATH = Path("app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java")
+
+
+def main() -> None:
+    text = SERVICE_PATH.read_text(encoding="utf-8")
+    if "QUIZ_LAYOUT_V164" in text:
+        print("1.6.4 quiz layout patch already applied")
+        return
+
+    state_marker = '    private int consecutiveMisses;\n'
+    if state_marker not in text:
+        raise RuntimeError("Performance patch must run before full-auto quiz patch")
+
+    text = text.replace(
+        state_marker,
+        state_marker
+        + '    private String pendingClickQuestion = "";\n'
+        + '    private String pendingPageAction = "";\n'
+        + '    private long lastPageActionAt;\n'
+        + '    private static final String QUIZ_LAYOUT_V164 = "fixed-four-row-layout";\n',
+        1,
+    )
+
+    handle_marker = "    private void handleOcrResult(Text result) {"
+    click_marker = "    private void tryAutoClickAnswer(Text result, QuestionBank.Match match) {"
+    handle_start = text.index(handle_marker)
+    click_start = text.index(click_marker)
+
+    handle_replacement = r'''    private void handleOcrResult(Text result) {
+        // 完整流程：开始答题 → 两道题 → 结算 → 下一关。
+        if (autoClick && tryAutoPageAction(result)) {
+            lastQuestion = "";
+            lastClickedQuestion = "";
+            pendingClickQuestion = "";
+            return;
+        }
+
+        List<String> lines = new ArrayList<>();
+        for (Text.TextBlock block : result.getTextBlocks()) {
+            for (Text.Line line : block.getLines()) {
+                String value = line.getText().trim();
+                if (!value.isEmpty()) lines.add(value);
+            }
+        }
+
+        QuestionBank.Match match = questionBank.findBest(lines, result.getText());
+        if (match == null) {
+            consecutiveMisses++;
+            if (consecutiveMisses >= 2) {
+                lastQuestion = "";
+                lastClickedQuestion = "";
+                pendingClickQuestion = "";
+                updateOverlay(autoClick
+                        ? "正在识别下一题…\n全自动模式已开启"
+                        : "正在识别下一题…\n长按悬浮窗停止");
+            }
+            return;
+        }
+
+        consecutiveMisses = 0;
+        if (!match.question.equals(lastQuestion)) {
+            lastQuestion = match.question;
+            lastClickedQuestion = "";
+            pendingClickQuestion = "";
+            updateOverlay("答案：" + match.answer +
+                    "\n匹配 " + Math.round(match.score * 100) + "%" +
+                    (autoClick ? " · 等待点击" : ""));
+        }
+
+        if (autoClick) tryAutoClickAnswer(result, match);
+    }
+
+    private boolean tryAutoPageAction(Text result) {
+        if (!AutomationAccessibilityService.isReady()) return false;
+        long now = System.currentTimeMillis();
+        if (!pendingPageAction.isEmpty() || now - lastPageActionAt < 1800L) {
+            return false;
+        }
+
+        for (Text.TextBlock block : result.getTextBlocks()) {
+            for (Text.Line line : block.getLines()) {
+                Rect box = line.getBoundingBox();
+                if (box == null) continue;
+
+                String normalized = QuestionBank.normalize(line.getText());
+                String action = "";
+                if (normalized.contains("下一关")) action = "下一关";
+                else if (normalized.contains("开始答题")) action = "开始答题";
+                if (action.isEmpty()) continue;
+
+                float detectedY = box.centerY() / Math.max(0.01f, ocrScale) + ocrCropTop;
+                float screenX = screenWidth * 0.585f;
+                float screenY = clamp(detectedY,
+                        screenHeight * 0.20f, screenHeight * 0.88f);
+                final String finalAction = action;
+
+                pendingPageAction = finalAction;
+                lastPageActionAt = now;
+                updateOverlay("正在点击：" + finalAction);
+                boolean queued = AutomationAccessibilityService.performTap(
+                        screenX, screenY, success -> mainHandler.post(() -> {
+                            if (finalAction.equals(pendingPageAction)) {
+                                pendingPageAction = "";
+                            }
+                            if (success) {
+                                lastQuestion = "";
+                                lastClickedQuestion = "";
+                                pendingClickQuestion = "";
+                                updateOverlay(finalAction + "已点击，等待下一题…");
+                            } else {
+                                lastPageActionAt = 0L;
+                                updateOverlay(finalAction + "点击失败，正在重试…");
+                            }
+                        }));
+                if (!queued) {
+                    pendingPageAction = "";
+                    lastPageActionAt = 0L;
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+'''
+    text = text[:handle_start] + handle_replacement + text[click_start:]
+
+    click_start = text.index(click_marker)
+    target_marker = "    private AnswerTarget findAnswerTarget(Text result, String answerText) {"
+    target_start = text.index(target_marker)
+
+    click_replacement = r'''    private void tryAutoClickAnswer(Text result, QuestionBank.Match match) {
+        if (!AutomationAccessibilityService.isReady()) {
+            updateOverlay("答案：" + match.answer + "\n自动点击权限未开启");
+            return;
+        }
+        if (match.score < 0.68) return;
+
+        long now = System.currentTimeMillis();
+        if (match.question.equals(lastClickedQuestion) ||
+                match.question.equals(pendingClickQuestion) ||
+                now - lastClickAt < CLICK_COOLDOWN_MS) {
+            return;
+        }
+
+        AnswerTarget target = findAnswerTarget(result, match.answer);
+        if (target == null) return;
+
+        // 视频中的答题界面是四条固定横向选项。
+        // OCR 负责判断答案位于第几行，实际点击整条按钮的中心。
+        float detectedY = target.centerY / Math.max(0.01f, ocrScale) + ocrCropTop;
+        float firstRowY = screenHeight * 0.551f;
+        float rowGap = screenHeight * 0.0536f;
+        int optionIndex = Math.round((detectedY - firstRowY) / rowGap);
+        optionIndex = Math.max(0, Math.min(3, optionIndex));
+
+        float screenX = screenWidth * 0.585f;
+        float screenY = firstRowY + rowGap * optionIndex;
+        final String clickQuestion = match.question;
+        final String clickAnswer = match.answer;
+        final int selectedOption = optionIndex + 1;
+
+        pendingClickQuestion = clickQuestion;
+        lastClickAt = now;
+        updateOverlay("答案：" + clickAnswer +
+                "\n正在点击第" + selectedOption + "项…");
+
+        boolean queued = AutomationAccessibilityService.performTap(
+                screenX, screenY, success -> mainHandler.post(() -> {
+                    if (clickQuestion.equals(pendingClickQuestion)) {
+                        pendingClickQuestion = "";
+                    }
+                    if (!clickQuestion.equals(lastQuestion)) return;
+                    if (success) {
+                        lastClickedQuestion = clickQuestion;
+                        updateOverlay("答案：" + clickAnswer +
+                                "\n已点击第" + selectedOption + "项");
+                    } else {
+                        lastClickAt = 0L;
+                        lastClickedQuestion = "";
+                        updateOverlay("答案：" + clickAnswer +
+                                "\n点击失败，正在重新识别…");
+                    }
+                }));
+        if (!queued) {
+            pendingClickQuestion = "";
+            lastClickAt = 0L;
+            updateOverlay("答案：" + clickAnswer + "\n自动点击权限未连接");
+        }
+    }
+
+'''
+    text = text[:click_start] + click_replacement + text[target_start:]
+    SERVICE_PATH.write_text(text, encoding="utf-8")
+    print("Applied full-auto fixed-layout quiz patch 1.6.4")
+
+
+if __name__ == "__main__":
+    main()
