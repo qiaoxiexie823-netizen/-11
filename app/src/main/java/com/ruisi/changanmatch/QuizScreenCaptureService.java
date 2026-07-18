@@ -11,6 +11,7 @@ import android.content.pm.ServiceInfo;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
+import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
@@ -48,6 +49,7 @@ public class QuizScreenCaptureService extends Service {
     public static final String EXTRA_RESULT_CODE = "quizResultCode";
     public static final String EXTRA_RESULT_DATA = "quizResultData";
     public static final String EXTRA_CENTER_ONLY = "quizCenterOnly";
+    public static final String EXTRA_AUTO_CLICK = "quizAutoClick";
 
     private static final String CHANNEL_ID = "quiz_capture";
     private static final int NOTIFICATION_ID = 8232;
@@ -66,8 +68,16 @@ public class QuizScreenCaptureService extends Service {
     private TextView overlayView;
     private WindowManager.LayoutParams overlayParams;
     private boolean centerOnly = true;
+    private boolean autoClick;
+    private int screenWidth;
+    private int screenHeight;
+    private int ocrCropTop;
+    private int ocrBitmapHeight;
+    private float ocrScale = 1f;
     private long lastProcessAt;
+    private long lastClickAt;
     private String lastQuestion = "";
+    private String lastClickedQuestion = "";
 
     @Override
     public void onCreate() {
@@ -91,6 +101,7 @@ public class QuizScreenCaptureService extends Service {
         if (!ACTION_START.equals(intent.getAction())) return START_NOT_STICKY;
 
         centerOnly = intent.getBooleanExtra(EXTRA_CENTER_ONLY, true);
+        autoClick = intent.getBooleanExtra(EXTRA_AUTO_CLICK, false);
         int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED);
         Intent resultData;
         if (Build.VERSION.SDK_INT >= 33) {
@@ -105,7 +116,9 @@ public class QuizScreenCaptureService extends Service {
         }
 
         startAsForeground();
-        showOverlay("正在载入 3603 道题库…\n长按悬浮窗停止");
+        showOverlay(autoClick
+                ? "正在载入 3603 道题库…\n自动点击已开启"
+                : "正在载入 3603 道题库…\n长按悬浮窗停止");
         startProjection(resultCode, resultData);
         return START_NOT_STICKY;
     }
@@ -121,8 +134,8 @@ public class QuizScreenCaptureService extends Service {
                 : new Notification.Builder(this);
         Notification notification = builder
                 .setSmallIcon(R.drawable.ic_launcher)
-                .setContentTitle("深情助手正在识题")
-                .setContentText("本地 OCR 与题库匹配运行中")
+                .setContentTitle(autoClick ? "深情助手正在识题并自动点击" : "深情助手正在识题")
+                .setContentText(autoClick ? "本地识别正确答案后点击选项" : "本地 OCR 与题库匹配运行中")
                 .setOngoing(true)
                 .addAction(new Notification.Action.Builder(null, "停止", stopPending).build())
                 .build();
@@ -161,6 +174,8 @@ public class QuizScreenCaptureService extends Service {
         int width = metrics.widthPixels;
         int height = metrics.heightPixels;
         int density = metrics.densityDpi;
+        screenWidth = width;
+        screenHeight = height;
 
         imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2);
         imageReader.setOnImageAvailableListener(this::onImageAvailable, captureHandler);
@@ -168,7 +183,9 @@ public class QuizScreenCaptureService extends Service {
                 "EmbeddedQuizCapture", width, height, density,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 imageReader.getSurface(), null, captureHandler);
-        updateOverlay("等待识别题目…\n长按悬浮窗停止");
+        updateOverlay(autoClick
+                ? "等待识别题目…\n自动点击已开启"
+                : "等待识别题目…\n长按悬浮窗停止");
     }
 
     private void onImageAvailable(ImageReader reader) {
@@ -227,14 +244,20 @@ public class QuizScreenCaptureService extends Service {
         int bottom = centerOnly
                 ? Math.round(source.getHeight() * 0.90f)
                 : source.getHeight();
+        ocrCropTop = top;
         Bitmap cropped = Bitmap.createBitmap(source, 0, top,
                 source.getWidth(), Math.max(1, bottom - top));
         int maxWidth = 1600;
-        if (cropped.getWidth() <= maxWidth) return cropped;
-        int targetHeight = Math.round(cropped.getHeight() *
-                (maxWidth / (float) cropped.getWidth()));
+        if (cropped.getWidth() <= maxWidth) {
+            ocrScale = 1f;
+            ocrBitmapHeight = cropped.getHeight();
+            return cropped;
+        }
+        ocrScale = maxWidth / (float) cropped.getWidth();
+        int targetHeight = Math.round(cropped.getHeight() * ocrScale);
         Bitmap scaled = Bitmap.createScaledBitmap(
                 cropped, maxWidth, targetHeight, true);
+        ocrBitmapHeight = scaled.getHeight();
         if (scaled != cropped) cropped.recycle();
         return scaled;
     }
@@ -250,14 +273,107 @@ public class QuizScreenCaptureService extends Service {
         QuestionBank.Match match = questionBank.findBest(lines, result.getText());
         if (match == null) {
             if (lastQuestion.isEmpty()) {
-                updateOverlay("正在寻找题目…\n长按悬浮窗停止");
+                updateOverlay(autoClick
+                        ? "正在寻找题目…\n自动点击已开启"
+                        : "正在寻找题目…\n长按悬浮窗停止");
             }
             return;
         }
+
         if (!match.question.equals(lastQuestion)) {
             lastQuestion = match.question;
+            lastClickedQuestion = "";
             updateOverlay("答案：" + match.answer + "\n" + match.question +
-                    "\n匹配 " + Math.round(match.score * 100) + "%");
+                    "\n匹配 " + Math.round(match.score * 100) + "%" +
+                    (autoClick ? " · 等待点击" : ""));
+        }
+
+        if (autoClick) {
+            tryAutoClickAnswer(result, match);
+        }
+    }
+
+    private void tryAutoClickAnswer(Text result, QuestionBank.Match match) {
+        if (!AutomationAccessibilityService.isReady()) {
+            updateOverlay("答案：" + match.answer + "\n自动点击权限未开启");
+            return;
+        }
+        if (match.score < 0.68) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (match.question.equals(lastClickedQuestion) || now - lastClickAt < 1200L) {
+            return;
+        }
+
+        AnswerTarget target = findAnswerTarget(result, match.answer);
+        if (target == null) return;
+
+        float screenX = clamp(target.centerX / Math.max(0.01f, ocrScale),
+                1f, Math.max(1f, screenWidth - 1f));
+        float screenY = clamp(target.centerY / Math.max(0.01f, ocrScale) + ocrCropTop,
+                1f, Math.max(1f, screenHeight - 1f));
+        if (AutomationAccessibilityService.performTap(screenX, screenY)) {
+            lastClickedQuestion = match.question;
+            lastClickAt = now;
+            updateOverlay("答案：" + match.answer + "\n已自动点击：" + target.text);
+        }
+    }
+
+    private AnswerTarget findAnswerTarget(Text result, String answerText) {
+        String[] answers = answerText.split("\\s*/\\s*");
+        AnswerTarget best = null;
+        double bestScore = 0.0;
+        for (Text.TextBlock block : result.getTextBlocks()) {
+            for (Text.Line line : block.getLines()) {
+                Rect box = line.getBoundingBox();
+                if (box == null || box.centerY() < ocrBitmapHeight * 0.30f) continue;
+                String lineValue = QuestionBank.normalize(line.getText());
+                if (lineValue.isEmpty()) continue;
+
+                for (String answer : answers) {
+                    String normalizedAnswer = QuestionBank.normalize(answer);
+                    if (normalizedAnswer.isEmpty()) continue;
+                    double score = answerLineScore(lineValue, normalizedAnswer);
+                    score += Math.min(0.03,
+                            box.centerY() / (double) Math.max(1, ocrBitmapHeight) * 0.03);
+                    if (score > bestScore) {
+                        bestScore = score;
+                        best = new AnswerTarget(line.getText(), box.centerX(), box.centerY());
+                    }
+                }
+            }
+        }
+        return bestScore >= 0.78 ? best : null;
+    }
+
+    private double answerLineScore(String line, String answer) {
+        if (line.equals(answer)) return 1.0;
+        if (line.endsWith(answer) && line.length() <= answer.length() + 3) return 0.98;
+        if (line.startsWith(answer) && line.length() <= answer.length() + 3) return 0.96;
+        if (answer.length() >= 2 && line.contains(answer)) {
+            return 0.88 + Math.min(0.08,
+                    answer.length() / (double) Math.max(1, line.length()) * 0.08);
+        }
+        if (answer.contains(line) && line.length() >= Math.max(2, answer.length() - 2)) {
+            return 0.82;
+        }
+        return 0.0;
+    }
+
+    private float clamp(float value, float min, float max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private static final class AnswerTarget {
+        final String text;
+        final float centerX;
+        final float centerY;
+
+        AnswerTarget(String text, float centerX, float centerY) {
+            this.text = text;
+            this.centerX = centerX;
+            this.centerY = centerY;
         }
     }
 
