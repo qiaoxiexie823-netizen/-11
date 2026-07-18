@@ -20,26 +20,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Import embedded quiz files from feature branch
+      - name: Verify embedded question bank
         shell: bash
         run: |
           set -euo pipefail
-          git fetch origin feature/embed-quiz-bank:refs/remotes/origin/feature/embed-quiz-bank
-          mkdir -p app/src/main/java/com/ruisi/changanmatch app/src/main/assets generated-apk
-          for FILE in \
-            app/src/main/java/com/ruisi/changanmatch/QuestionBank.java \
-            app/src/main/java/com/ruisi/changanmatch/QuizActivity.java \
-            app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java \
-            app/src/main/assets/questions.jsonl \
-            app/src/main/assets/questions.info \
-            app/src/main/AndroidManifest.xml \
-            app/build.gradle \
-            gradle.properties
-          do
-            git show "origin/feature/embed-quiz-bank:$FILE" > "$FILE"
-          done
+          test -f app/src/main/assets/questions.jsonl
           test "$(wc -l < app/src/main/assets/questions.jsonl)" -ge 3600
-          printf 'run_id=%s\nsource_branch=feature/embed-quiz-bank\nquestions=%s\n' \
+          mkdir -p generated-apk
+          printf 'run_id=%s\nquestions=%s\n' \
             "$GITHUB_RUN_ID" "$(wc -l < app/src/main/assets/questions.jsonl)" \
             > generated-apk/manifest.txt
 
@@ -95,20 +83,13 @@ jobs:
           path.write_text(text[:start] + replacement + text[end:], encoding='utf-8')
           PY
 
-      - name: Commit 1.6.0 integration to main
+      - name: Commit final integration
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app/src/main/java/com/ruisi/changanmatch/QuestionBank.java \
-                  app/src/main/java/com/ruisi/changanmatch/QuizActivity.java \
-                  app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java \
-                  app/src/main/java/com/ruisi/changanmatch/MainActivity.java \
-                  app/src/main/assets/questions.jsonl \
-                  app/src/main/assets/questions.info \
-                  app/src/main/AndroidManifest.xml app/build.gradle gradle.properties \
-                  generated-apk/manifest.txt
-          git commit -m "Release embedded 3603-question quiz assistant 1.6.0"
+          git add app/src/main/java/com/ruisi/changanmatch/MainActivity.java generated-apk/manifest.txt
+          git commit -m "Finish embedded quiz entry for 1.6.0"
           git push origin HEAD:main
 
       - name: Set up Java 17
