@@ -1,0 +1,376 @@
+name: Add Quiz Auto Click 1.6.1
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - ".github/workflows/add-quiz-auto-click.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Add auto-click source code
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              if old not in text:
+                  raise SystemExit(f'未找到待修改代码：{label}')
+              return text.replace(old, new, 1)
+
+          # 1. 无障碍服务增加单击手势。
+          path = Path('app/src/main/java/com/ruisi/changanmatch/AutomationAccessibilityService.java')
+          text = path.read_text(encoding='utf-8')
+          marker = '''    @Override
+              public void onAccessibilityEvent(AccessibilityEvent event) {'''.replace('      ', '')
+          tap_method = '''    public static boolean performTap(float x, float y) {
+              AutomationAccessibilityService service = instance;
+              if (service == null) return false;
+              service.mainHandler.post(() -> {
+                  Path path = new Path();
+                  path.moveTo(x, y);
+                  GestureDescription.StrokeDescription stroke =
+                          new GestureDescription.StrokeDescription(path, 0, 90);
+                  GestureDescription gesture = new GestureDescription.Builder()
+                          .addStroke(stroke)
+                          .build();
+                  service.dispatchGesture(gesture, null, null);
+              });
+              return true;
+          }
+
+'''
+          if 'public static boolean performTap' not in text:
+              text = text.replace('    @Override\n    public void onAccessibilityEvent',
+                                  tap_method + '    @Override\n    public void onAccessibilityEvent', 1)
+          path.write_text(text, encoding='utf-8')
+
+          # 2. 答题器界面增加自动点击开关和权限入口。
+          path = Path('app/src/main/java/com/ruisi/changanmatch/QuizActivity.java')
+          text = path.read_text(encoding='utf-8')
+          text = replace_once(text,
+              '    private CheckBox centerOnly;\n    private TextView permissionState;',
+              '    private CheckBox centerOnly;\n    private CheckBox autoClick;\n    private TextView permissionState;',
+              'QuizActivity 字段')
+          text = replace_once(text,
+              '授权悬浮窗后启动识题，切回游戏即可自动读取题目，并在可拖动悬浮窗中显示答案。全部在手机本地完成。',
+              '授权悬浮窗后启动识题，切回游戏即可自动读取题目。开启自动点击并授权无障碍后，会自动点击包含正确答案的选项；关闭时只显示答案。',
+              '答题器说明')
+          insert_after = '''        captureCard.addView(centerOnly, fullWidth());
+'''
+          auto_ui = '''        captureCard.addView(centerOnly, fullWidth());
+
+          Button accessibilityButton = secondaryButton("② 开启自动点击权限");
+          accessibilityButton.setOnClickListener(v ->
+                  startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+          captureCard.addView(accessibilityButton, buttonParams());
+
+          autoClick = new CheckBox(this);
+          autoClick.setText("识别正确答案后自动点击选项");
+          autoClick.setTextSize(15);
+          autoClick.setTextColor(TEXT_DARK);
+          autoClick.setChecked(getSharedPreferences("quiz_settings", MODE_PRIVATE)
+                  .getBoolean("autoClick", false));
+          autoClick.setOnCheckedChangeListener((button, checked) ->
+                  getSharedPreferences("quiz_settings", MODE_PRIVATE)
+                          .edit().putBoolean("autoClick", checked).apply());
+          autoClick.setPadding(0, dp(5), 0, dp(4));
+          captureCard.addView(autoClick, fullWidth());
+'''
+          text = replace_once(text, insert_after, auto_ui, '自动点击界面')
+          text = text.replace('Button startButton = primaryButton("② 开始屏幕识题");',
+                              'Button startButton = primaryButton("③ 开始屏幕识题");', 1)
+          old_state = '''        boolean overlay = Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+                  Settings.canDrawOverlays(this);
+          permissionState.setText("悬浮窗权限：" + (overlay ? "已授权" : "未授权"));
+          permissionState.setTextColor(overlay ? GREEN : Color.rgb(190, 80, 35));
+'''
+          new_state = '''        boolean overlay = Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+                  Settings.canDrawOverlays(this);
+          boolean accessibility = AutomationAccessibilityService.isReady();
+          permissionState.setText("悬浮窗：" + (overlay ? "已授权" : "未授权") +
+                  "    自动点击：" + (accessibility ? "已开启" : "未开启"));
+          permissionState.setTextColor(overlay && (!autoClick.isChecked() || accessibility)
+                  ? GREEN : Color.rgb(190, 80, 35));
+'''
+          text = replace_once(text, old_state, new_state, '权限状态')
+          capture_marker = '''        startActivityForResult(projectionManager.createScreenCaptureIntent(), REQ_CAPTURE);
+'''
+          capture_guard = '''        if (autoClick.isChecked() && !AutomationAccessibilityService.isReady()) {
+              new AlertDialog.Builder(this)
+                      .setTitle("需要自动点击权限")
+                      .setMessage("请在无障碍设置中开启“宴会消消乐自动滑动”。该权限同时用于答题器点击正确选项。")
+                      .setPositiveButton("去开启", (dialog, which) ->
+                              startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)))
+                      .setNegativeButton("取消", null)
+                      .show();
+              return;
+          }
+          startActivityForResult(projectionManager.createScreenCaptureIntent(), REQ_CAPTURE);
+'''
+          text = replace_once(text, capture_marker, capture_guard, '启动权限检查')
+          extra_marker = '''        service.putExtra(QuizScreenCaptureService.EXTRA_CENTER_ONLY, centerOnly.isChecked());
+'''
+          extra_new = '''        service.putExtra(QuizScreenCaptureService.EXTRA_CENTER_ONLY, centerOnly.isChecked());
+          service.putExtra(QuizScreenCaptureService.EXTRA_AUTO_CLICK, autoClick.isChecked());
+'''
+          text = replace_once(text, extra_marker, extra_new, '传递自动点击参数')
+          text = text.replace('Toast.makeText(this, "识题已启动，请切回游戏", Toast.LENGTH_LONG).show();',
+                              'Toast.makeText(this, autoClick.isChecked() ? "识题与自动点击已启动，请切回游戏" : "识题已启动，请切回游戏", Toast.LENGTH_LONG).show();', 1)
+          path.write_text(text, encoding='utf-8')
+
+          # 3. OCR 服务定位答案文本并映射回屏幕坐标点击。
+          path = Path('app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java')
+          text = path.read_text(encoding='utf-8')
+          text = replace_once(text,
+              'import android.graphics.PixelFormat;\n',
+              'import android.graphics.PixelFormat;\nimport android.graphics.Rect;\n',
+              'Rect 导入')
+          text = replace_once(text,
+              '    public static final String EXTRA_CENTER_ONLY = "quizCenterOnly";\n',
+              '    public static final String EXTRA_CENTER_ONLY = "quizCenterOnly";\n    public static final String EXTRA_AUTO_CLICK = "quizAutoClick";\n',
+              '自动点击常量')
+          fields_old = '''    private boolean centerOnly = true;
+      private long lastProcessAt;
+      private String lastQuestion = "";
+'''.replace('      ', '    ')
+          fields_new = '''    private boolean centerOnly = true;
+      private boolean autoClick;
+      private int screenWidth;
+      private int screenHeight;
+      private int ocrCropTop;
+      private int ocrBitmapHeight;
+      private float ocrScale = 1f;
+      private long lastProcessAt;
+      private long lastClickAt;
+      private String lastQuestion = "";
+      private String lastClickedQuestion = "";
+'''.replace('      ', '    ')
+          text = replace_once(text, fields_old, fields_new, 'OCR 字段')
+          text = replace_once(text,
+              '        centerOnly = intent.getBooleanExtra(EXTRA_CENTER_ONLY, true);\n',
+              '        centerOnly = intent.getBooleanExtra(EXTRA_CENTER_ONLY, true);\n        autoClick = intent.getBooleanExtra(EXTRA_AUTO_CLICK, false);\n',
+              '读取自动点击参数')
+          text = text.replace('showOverlay("正在载入 3603 道题库…\\n长按悬浮窗停止");',
+                              'showOverlay(autoClick ? "正在载入 3603 道题库…\\n自动点击已开启" : "正在载入 3603 道题库…\\n长按悬浮窗停止");', 1)
+          text = replace_once(text,
+              '        int width = metrics.widthPixels;\n        int height = metrics.heightPixels;\n',
+              '        int width = metrics.widthPixels;\n        int height = metrics.heightPixels;\n        screenWidth = width;\n        screenHeight = height;\n',
+              '记录屏幕尺寸')
+          text = text.replace('updateOverlay("等待识别题目…\\n长按悬浮窗停止");',
+                              'updateOverlay(autoClick ? "等待识别题目…\\n自动点击已开启" : "等待识别题目…\\n长按悬浮窗停止");', 1)
+
+          prepare_start = text.index('    private Bitmap prepareBitmap(Bitmap source) {')
+          prepare_end = text.index('    private void handleOcrResult(Text result) {')
+          prepare_new = '''    private Bitmap prepareBitmap(Bitmap source) {
+              int top = centerOnly ? Math.round(source.getHeight() * 0.12f) : 0;
+              int bottom = centerOnly
+                      ? Math.round(source.getHeight() * 0.90f)
+                      : source.getHeight();
+              ocrCropTop = top;
+              Bitmap cropped = Bitmap.createBitmap(source, 0, top,
+                      source.getWidth(), Math.max(1, bottom - top));
+              int maxWidth = 1600;
+              if (cropped.getWidth() <= maxWidth) {
+                  ocrScale = 1f;
+                  ocrBitmapHeight = cropped.getHeight();
+                  return cropped;
+              }
+              ocrScale = maxWidth / (float) cropped.getWidth();
+              int targetHeight = Math.round(cropped.getHeight() * ocrScale);
+              Bitmap scaled = Bitmap.createScaledBitmap(
+                      cropped, maxWidth, targetHeight, true);
+              ocrBitmapHeight = scaled.getHeight();
+              if (scaled != cropped) cropped.recycle();
+              return scaled;
+          }
+
+'''
+          text = text[:prepare_start] + prepare_new + text[prepare_end:]
+
+          handle_start = text.index('    private void handleOcrResult(Text result) {')
+          handle_end = text.index('    private void showOverlay(String initialText) {')
+          handle_new = '''    private void handleOcrResult(Text result) {
+              List<String> lines = new ArrayList<>();
+              for (Text.TextBlock block : result.getTextBlocks()) {
+                  for (Text.Line line : block.getLines()) {
+                      String value = line.getText().trim();
+                      if (!value.isEmpty()) lines.add(value);
+                  }
+              }
+              QuestionBank.Match match = questionBank.findBest(lines, result.getText());
+              if (match == null) {
+                  if (lastQuestion.isEmpty()) {
+                      updateOverlay(autoClick
+                              ? "正在寻找题目…\\n自动点击已开启"
+                              : "正在寻找题目…\\n长按悬浮窗停止");
+                  }
+                  return;
+              }
+
+              if (!match.question.equals(lastQuestion)) {
+                  lastQuestion = match.question;
+                  lastClickedQuestion = "";
+                  updateOverlay("答案：" + match.answer + "\\n" + match.question +
+                          "\\n匹配 " + Math.round(match.score * 100) + "%" +
+                          (autoClick ? " · 等待点击" : ""));
+              }
+
+              if (autoClick) {
+                  tryAutoClickAnswer(result, match);
+              }
+          }
+
+          private void tryAutoClickAnswer(Text result, QuestionBank.Match match) {
+              if (!AutomationAccessibilityService.isReady()) {
+                  updateOverlay("答案：" + match.answer + "\\n自动点击权限未开启");
+                  return;
+              }
+              long now = System.currentTimeMillis();
+              if (match.question.equals(lastClickedQuestion) || now - lastClickAt < 1200L) {
+                  return;
+              }
+
+              AnswerTarget target = findAnswerTarget(result, match.answer);
+              if (target == null) return;
+
+              float screenX = clamp(target.centerX / Math.max(0.01f, ocrScale),
+                      1f, Math.max(1f, screenWidth - 1f));
+              float screenY = clamp(target.centerY / Math.max(0.01f, ocrScale) + ocrCropTop,
+                      1f, Math.max(1f, screenHeight - 1f));
+              if (AutomationAccessibilityService.performTap(screenX, screenY)) {
+                  lastClickedQuestion = match.question;
+                  lastClickAt = now;
+                  updateOverlay("答案：" + match.answer + "\\n已自动点击：" + target.text);
+              }
+          }
+
+          private AnswerTarget findAnswerTarget(Text result, String answerText) {
+              String[] answers = answerText.split("\\\\s*/\\\\s*");
+              AnswerTarget best = null;
+              double bestScore = 0.0;
+              for (Text.TextBlock block : result.getTextBlocks()) {
+                  for (Text.Line line : block.getLines()) {
+                      Rect box = line.getBoundingBox();
+                      if (box == null || box.centerY() < ocrBitmapHeight * 0.30f) continue;
+                      String lineValue = QuestionBank.normalize(line.getText());
+                      if (lineValue.isEmpty()) continue;
+
+                      for (String answer : answers) {
+                          String normalizedAnswer = QuestionBank.normalize(answer);
+                          if (normalizedAnswer.isEmpty()) continue;
+                          double score = answerLineScore(lineValue, normalizedAnswer);
+                          if (score > bestScore) {
+                              bestScore = score;
+                              best = new AnswerTarget(line.getText(), box.centerX(), box.centerY());
+                          }
+                      }
+                  }
+              }
+              return bestScore >= 0.78 ? best : null;
+          }
+
+          private double answerLineScore(String line, String answer) {
+              if (line.equals(answer)) return 1.0;
+              if (line.endsWith(answer) && line.length() <= answer.length() + 3) return 0.98;
+              if (line.startsWith(answer) && line.length() <= answer.length() + 3) return 0.96;
+              if (answer.length() >= 2 && line.contains(answer)) {
+                  return 0.88 + Math.min(0.09, answer.length() / (double) Math.max(1, line.length()) * 0.09);
+              }
+              if (answer.contains(line) && line.length() >= Math.max(2, answer.length() - 2)) return 0.82;
+              return 0.0;
+          }
+
+          private float clamp(float value, float min, float max) {
+              return Math.max(min, Math.min(max, value));
+          }
+
+          private static final class AnswerTarget {
+              final String text;
+              final float centerX;
+              final float centerY;
+
+              AnswerTarget(String text, float centerX, float centerY) {
+                  this.text = text;
+                  this.centerX = centerX;
+                  this.centerY = centerY;
+              }
+          }
+
+'''
+          text = text[:handle_start] + handle_new + text[handle_end:]
+          path.write_text(text, encoding='utf-8')
+
+          # 4. 升级版本号。
+          path = Path('app/build.gradle')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace('versionCode 10', 'versionCode 11', 1)
+          text = text.replace('versionName "1.6.0"', 'versionName "1.6.1"', 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Commit auto-click 1.6.1
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/ruisi/changanmatch/AutomationAccessibilityService.java \
+                  app/src/main/java/com/ruisi/changanmatch/QuizActivity.java \
+                  app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java \
+                  app/build.gradle
+          git commit -m "Add quiz answer auto-click 1.6.1"
+          git push origin HEAD:main
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android API 35
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build 1.6.1 APK
+        shell: bash
+        run: gradle --no-daemon --stacktrace clean assembleDebug
+
+      - name: Prepare APK
+        shell: bash
+        run: |
+          test -f app/build/outputs/apk/debug/app-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk ShenqingAssistant-1.6.1-auto-click.apk
+          sha256sum ShenqingAssistant-1.6.1-auto-click.apk > ShenqingAssistant-1.6.1-auto-click.apk.sha256
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShenqingAssistant-1.6.1-AutoClick-APK
+          path: |
+            ShenqingAssistant-1.6.1-auto-click.apk
+            ShenqingAssistant-1.6.1-auto-click.apk.sha256
+          if-no-files-found: error
+          retention-days: 30
