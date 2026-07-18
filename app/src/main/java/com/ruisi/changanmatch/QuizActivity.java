@@ -35,6 +35,7 @@ public class QuizActivity extends Activity {
     private MediaProjectionManager projectionManager;
     private QuestionBank questionBank;
     private CheckBox centerOnly;
+    private CheckBox autoClick;
     private TextView permissionState;
     private TextView manualResult;
 
@@ -96,9 +97,9 @@ public class QuizActivity extends Activity {
         captureCard.setPadding(dp(16), dp(16), dp(16), dp(16));
         root.addView(captureCard, cardParams());
 
-        captureCard.addView(text("屏幕识题", 19, PURPLE_DARK), fullWidth());
+        captureCard.addView(text("屏幕识题与自动点击", 19, PURPLE_DARK), fullWidth());
         TextView intro = text(
-                "授权悬浮窗后启动识题，切回游戏即可自动读取题目，并在可拖动悬浮窗中显示答案。全部在手机本地完成。",
+                "启动后切回游戏，助手会自动识别题目并显示答案。开启自动点击且授权无障碍后，会定位包含正确答案的选项文字并点击；关闭时只显示答案。",
                 14, TEXT_MUTED);
         intro.setLineSpacing(0, 1.18f);
         intro.setPadding(0, dp(8), 0, dp(10));
@@ -112,6 +113,11 @@ public class QuizActivity extends Activity {
         overlayButton.setOnClickListener(v -> openOverlaySettings());
         captureCard.addView(overlayButton, buttonParams());
 
+        Button accessibilityButton = secondaryButton("② 开启自动点击权限");
+        accessibilityButton.setOnClickListener(v ->
+                startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+        captureCard.addView(accessibilityButton, buttonParams());
+
         centerOnly = new CheckBox(this);
         centerOnly.setText("仅识别屏幕中间区域（推荐，速度更快）");
         centerOnly.setTextSize(15);
@@ -121,14 +127,28 @@ public class QuizActivity extends Activity {
         centerOnly.setOnCheckedChangeListener((button, checked) ->
                 getSharedPreferences("quiz_settings", MODE_PRIVATE)
                         .edit().putBoolean("centerOnly", checked).apply());
-        centerOnly.setPadding(0, dp(6), 0, dp(4));
+        centerOnly.setPadding(0, dp(6), 0, dp(3));
         captureCard.addView(centerOnly, fullWidth());
 
-        Button startButton = primaryButton("② 开始屏幕识题");
+        autoClick = new CheckBox(this);
+        autoClick.setText("识别正确答案后自动点击选项");
+        autoClick.setTextSize(15);
+        autoClick.setTextColor(TEXT_DARK);
+        autoClick.setChecked(getSharedPreferences("quiz_settings", MODE_PRIVATE)
+                .getBoolean("autoClick", false));
+        autoClick.setOnCheckedChangeListener((button, checked) -> {
+            getSharedPreferences("quiz_settings", MODE_PRIVATE)
+                    .edit().putBoolean("autoClick", checked).apply();
+            updatePermissionState();
+        });
+        autoClick.setPadding(0, dp(3), 0, dp(4));
+        captureCard.addView(autoClick, fullWidth());
+
+        Button startButton = primaryButton("③ 开始屏幕识题");
         startButton.setOnClickListener(v -> startCaptureRequest());
         captureCard.addView(startButton, buttonParams());
 
-        Button stopButton = secondaryButton("停止识题");
+        Button stopButton = secondaryButton("停止识题与自动点击");
         stopButton.setOnClickListener(v -> {
             Intent stop = new Intent(this, QuizScreenCaptureService.class);
             stop.setAction(QuizScreenCaptureService.ACTION_STOP);
@@ -136,6 +156,14 @@ public class QuizActivity extends Activity {
             Toast.makeText(this, "已停止识题", Toast.LENGTH_SHORT).show();
         });
         captureCard.addView(stopButton, buttonParams());
+
+        TextView safetyNote = text(
+                "自动点击只会在题库匹配成功且屏幕中识别到答案文字时执行；匹配不确定或找不到答案选项时不会点击。",
+                12, Color.rgb(135, 96, 35));
+        safetyNote.setLineSpacing(0, 1.15f);
+        safetyNote.setPadding(dp(12), dp(10), dp(12), dp(10));
+        safetyNote.setBackground(roundRect(Color.rgb(255, 247, 232), 13));
+        captureCard.addView(safetyNote, fullWidth());
 
         LinearLayout manualCard = card();
         manualCard.setPadding(dp(16), dp(16), dp(16), dp(16));
@@ -194,8 +222,12 @@ public class QuizActivity extends Activity {
         if (permissionState == null) return;
         boolean overlay = Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
                 Settings.canDrawOverlays(this);
-        permissionState.setText("悬浮窗权限：" + (overlay ? "已授权" : "未授权"));
-        permissionState.setTextColor(overlay ? GREEN : Color.rgb(190, 80, 35));
+        boolean accessibility = AutomationAccessibilityService.isReady();
+        boolean wantsAutoClick = autoClick != null && autoClick.isChecked();
+        permissionState.setText("悬浮窗：" + (overlay ? "已授权" : "未授权") +
+                "    自动点击：" + (accessibility ? "已开启" : "未开启"));
+        permissionState.setTextColor(overlay && (!wantsAutoClick || accessibility)
+                ? GREEN : Color.rgb(190, 80, 35));
     }
 
     private void openOverlaySettings() {
@@ -218,6 +250,16 @@ public class QuizActivity extends Activity {
                     .show();
             return;
         }
+        if (autoClick.isChecked() && !AutomationAccessibilityService.isReady()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("需要自动点击权限")
+                    .setMessage("请在无障碍设置中开启“宴会消消乐自动滑动”。该权限同时用于答题器点击正确选项。")
+                    .setPositiveButton("去开启", (dialog, which) ->
+                            startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)))
+                    .setNegativeButton("取消", null)
+                    .show();
+            return;
+        }
         startActivityForResult(projectionManager.createScreenCaptureIntent(), REQ_CAPTURE);
     }
 
@@ -234,12 +276,15 @@ public class QuizActivity extends Activity {
         service.putExtra(QuizScreenCaptureService.EXTRA_RESULT_CODE, resultCode);
         service.putExtra(QuizScreenCaptureService.EXTRA_RESULT_DATA, data);
         service.putExtra(QuizScreenCaptureService.EXTRA_CENTER_ONLY, centerOnly.isChecked());
+        service.putExtra(QuizScreenCaptureService.EXTRA_AUTO_CLICK, autoClick.isChecked());
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(service);
         } else {
             startService(service);
         }
-        Toast.makeText(this, "识题已启动，请切回游戏", Toast.LENGTH_LONG).show();
+        Toast.makeText(this,
+                autoClick.isChecked() ? "识题与自动点击已启动，请切回游戏" : "识题已启动，请切回游戏",
+                Toast.LENGTH_LONG).show();
         moveTaskToBack(true);
     }
 
