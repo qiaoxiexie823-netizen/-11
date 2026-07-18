@@ -1,3 +1,3 @@
-run_id=29634406563
-commit=1c29bbeb6a4d42782cde7abb4a889f35ea309714
+run_id=29634500920
+commit=be1df125fe8db5e7d581e5ae5a13f365b8bcddb8
 artifact=ShenqingAssistant-1.6.4-FullAutoQuiz-APK
