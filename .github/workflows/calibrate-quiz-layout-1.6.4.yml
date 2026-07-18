@@ -1,0 +1,197 @@
+name: Calibrate Complete Quiz Interface 1.6.4
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - ".github/workflows/calibrate-quiz-layout-1.6.4.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  calibrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calibrate answer rows and page buttons
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java')
+          text = path.read_text(encoding='utf-8')
+
+          if 'QUIZ_LAYOUT_V164' not in text:
+              text = text.replace(
+                  '    private String lastClickedQuestion = "";\n',
+                  '    private String lastClickedQuestion = "";\n' +
+                  '    private String pendingClickQuestion = "";\n' +
+                  '    private String pendingPageAction = "";\n' +
+                  '    private long lastPageActionAt;\n' +
+                  '    private static final String QUIZ_LAYOUT_V164 = "fixed-four-row-layout";\n',
+                  1)
+
+              handle_start = text.index('    private void handleOcrResult(Text result) {')
+              click_start = text.index('    private void tryAutoClickAnswer(Text result, QuestionBank.Match match) {')
+              handle_replacement = '''    private void handleOcrResult(Text result) {
+        // 完整界面中的“开始答题”和“下一关”也属于自动流程。
+        if (autoClick && tryAutoPageAction(result)) {
+            lastQuestion = "";
+            lastClickedQuestion = "";
+            pendingClickQuestion = "";
+            return;
+        }
+
+        List<String> lines = new ArrayList<>();
+        for (Text.TextBlock block : result.getTextBlocks()) {
+            for (Text.Line line : block.getLines()) {
+                String value = line.getText().trim();
+                if (!value.isEmpty()) lines.add(value);
+            }
+        }
+        QuestionBank.Match match = questionBank.findBest(lines, result.getText());
+        if (match == null) {
+            return;
+        }
+
+        if (!match.question.equals(lastQuestion)) {
+            lastQuestion = match.question;
+            lastClickedQuestion = "";
+            pendingClickQuestion = "";
+            updateOverlay("答案：" + match.answer +
+                    "\\n匹配 " + Math.round(match.score * 100) + "%" +
+                    (autoClick ? " · 等待点击" : ""));
+        }
+
+        if (autoClick) tryAutoClickAnswer(result, match);
+    }
+
+    private boolean tryAutoPageAction(Text result) {
+        if (!AutomationAccessibilityService.isReady()) return false;
+        long now = System.currentTimeMillis();
+        if (!pendingPageAction.isEmpty() || now - lastPageActionAt < 900L) return false;
+
+        for (Text.TextBlock block : result.getTextBlocks()) {
+            for (Text.Line line : block.getLines()) {
+                Rect box = line.getBoundingBox();
+                if (box == null) continue;
+                String normalized = QuestionBank.normalize(line.getText());
+                String action = "";
+                if (normalized.contains("下一关")) action = "下一关";
+                else if (normalized.contains("开始答题")) action = "开始答题";
+                if (action.isEmpty()) continue;
+
+                float rawY = box.centerY() / Math.max(0.01f, ocrScale) + ocrCropTop;
+                float screenX = screenWidth * 0.585f;
+                float screenY = clamp(rawY, screenHeight * 0.20f, screenHeight * 0.88f);
+                final String finalAction = action;
+                pendingPageAction = finalAction;
+                lastPageActionAt = now;
+                updateOverlay("正在点击：" + finalAction);
+                boolean queued = AutomationAccessibilityService.performTap(screenX, screenY, success ->
+                        mainHandler.post(() -> {
+                            if (finalAction.equals(pendingPageAction)) pendingPageAction = "";
+                            if (success) {
+                                updateOverlay(finalAction + "已点击，等待下一题…");
+                            } else {
+                                lastPageActionAt = 0L;
+                                updateOverlay(finalAction + "点击失败，正在重试…");
+                            }
+                        }));
+                if (!queued) {
+                    pendingPageAction = "";
+                    lastPageActionAt = 0L;
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+'''
+              text = text[:handle_start] + handle_replacement + text[click_start:]
+
+              click_start = text.index('    private void tryAutoClickAnswer(Text result, QuestionBank.Match match) {')
+              target_start = text.index('    private AnswerTarget findAnswerTarget(Text result, String answerText) {')
+              click_replacement = '''    private void tryAutoClickAnswer(Text result, QuestionBank.Match match) {
+        if (!AutomationAccessibilityService.isReady()) {
+            updateOverlay("答案：" + match.answer + "\\n自动点击权限未开启");
+            return;
+        }
+        if (match.score < 0.68) return;
+
+        long now = System.currentTimeMillis();
+        if (match.question.equals(lastClickedQuestion) ||
+                match.question.equals(pendingClickQuestion) ||
+                now - lastClickAt < 650L) {
+            return;
+        }
+
+        AnswerTarget target = findAnswerTarget(result, match.answer);
+        if (target == null) return;
+
+        // 视频中的完整答题界面有四条固定选项。
+        // OCR 只负责判断答案属于第几条，真正点击整条按钮的中心位置。
+        float detectedY = target.centerY / Math.max(0.01f, ocrScale) + ocrCropTop;
+        float firstRowY = screenHeight * 0.550f;
+        float rowGap = screenHeight * 0.0545f;
+        int optionIndex = Math.round((detectedY - firstRowY) / rowGap);
+        optionIndex = Math.max(0, Math.min(3, optionIndex));
+
+        float screenX = screenWidth * 0.585f;
+        float screenY = firstRowY + rowGap * optionIndex;
+        final String clickQuestion = match.question;
+        final String clickAnswer = match.answer;
+        final int selectedOption = optionIndex + 1;
+
+        pendingClickQuestion = clickQuestion;
+        lastClickAt = now;
+        updateOverlay("答案：" + clickAnswer +
+                "\\n正在点击第" + selectedOption + "项…");
+
+        boolean queued = AutomationAccessibilityService.performTap(screenX, screenY, success ->
+                mainHandler.post(() -> {
+                    if (clickQuestion.equals(pendingClickQuestion)) pendingClickQuestion = "";
+                    if (!clickQuestion.equals(lastQuestion)) return;
+                    if (success) {
+                        lastClickedQuestion = clickQuestion;
+                        updateOverlay("答案：" + clickAnswer +
+                                "\\n已点击第" + selectedOption + "项");
+                    } else {
+                        lastClickAt = 0L;
+                        lastClickedQuestion = "";
+                        updateOverlay("答案：" + clickAnswer +
+                                "\\n点击失败，正在重新识别…");
+                    }
+                }));
+        if (!queued) {
+            pendingClickQuestion = "";
+            lastClickAt = 0L;
+            updateOverlay("答案：" + clickAnswer + "\\n自动点击权限未连接");
+        }
+    }
+
+'''
+              text = text[:click_start] + click_replacement + text[target_start:]
+              path.write_text(text, encoding='utf-8')
+
+          root = Path('build.gradle')
+          gradle = root.read_text(encoding='utf-8')
+          gradle = gradle.replace('versionCode 13', 'versionCode 14', 1)
+          gradle = gradle.replace('versionName "1.6.3"', 'versionName "1.6.4"', 1)
+          root.write_text(gradle, encoding='utf-8')
+          PY
+
+      - name: Commit calibrated complete-interface logic
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java build.gradle
+          git commit -m "Calibrate complete quiz interface and release 1.6.4"
+          git push origin HEAD:main
