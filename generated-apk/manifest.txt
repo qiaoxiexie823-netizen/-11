@@ -1,3 +1,3 @@
-run_id=29632866046
-commit=cee4cc45d73e7a243566c95be48530525af92ea3
-artifact=ShenqingAssistant-1.6.3-ReliableClick-APK
+run_id=29632887295
+commit=b6b09a9172f15263705810aee677cf9324cf1108
+artifact=ShenqingAssistant-1.6.4-FullAutoQuiz-APK
