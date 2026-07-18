@@ -30,12 +30,12 @@ jobs:
           @"
           run_id=$env:GITHUB_RUN_ID
           commit=$env:GITHUB_SHA
-          artifact=Shenqing-PC-Quiz-Assistant-2.1-ThreeModes-EXE
+          artifact=Shenqing-PC-Quiz-Assistant-2.1.1-NumPyFix-EXE
           "@ | Set-Content -Encoding UTF8 generated-pc/manifest.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add generated-pc/manifest.txt
-          git commit -m "Record Windows quiz assistant 2.1 build run" 2>$null
+          git commit -m "Record Windows quiz assistant 2.1.1 build run" 2>$null
           if ($LASTEXITCODE -eq 0) {
             git pull --rebase origin $env:GITHUB_REF_NAME
             git push origin "HEAD:$env:GITHUB_REF_NAME"
@@ -54,6 +54,15 @@ jobs:
           python -m pip install --upgrade pip wheel setuptools
           pip install -r windows-assistant/requirements.txt
 
+      - name: Apply NumPy-safe OCR parser
+        shell: pwsh
+        run: |
+          python windows-assistant/patch_numpy_ocr_fix.py
+          Select-String -Path windows-assistant/main.py -Pattern "APP_VERSION = \"2.1.1\"" -Quiet | Out-Null
+          if (!$?) { throw "Version patch was not applied" }
+          Select-String -Path windows-assistant/main.py -Pattern "def _sequence" -Quiet | Out-Null
+          if (!$?) { throw "NumPy OCR fix was not applied" }
+
       - name: Verify question bank and source
         shell: pwsh
         run: |
@@ -70,7 +79,7 @@ jobs:
         shell: pwsh
         run: |
           pyinstaller --noconfirm --clean --onefile --windowed `
-            --name "ShenqingPCQuizAssistant-2.1" `
+            --name "ShenqingPCQuizAssistant-2.1.1" `
             --add-data "app/src/main/assets/questions.jsonl;." `
             --collect-all rapidocr `
             --collect-all onnxruntime `
@@ -81,16 +90,16 @@ jobs:
       - name: Prepare download
         shell: pwsh
         run: |
-          if (!(Test-Path "dist/ShenqingPCQuizAssistant-2.1.exe")) { throw "EXE was not generated" }
-          Copy-Item "dist/ShenqingPCQuizAssistant-2.1.exe" "深情电脑答题助手-2.1三模式自动点击版.exe"
-          Get-FileHash "深情电脑答题助手-2.1三模式自动点击版.exe" -Algorithm SHA256 | Format-List | Out-File -Encoding UTF8 "深情电脑答题助手-2.1三模式自动点击版.exe.sha256.txt"
+          if (!(Test-Path "dist/ShenqingPCQuizAssistant-2.1.1.exe")) { throw "EXE was not generated" }
+          Copy-Item "dist/ShenqingPCQuizAssistant-2.1.1.exe" "深情电脑答题助手-2.1.1识别修复版.exe"
+          Get-FileHash "深情电脑答题助手-2.1.1识别修复版.exe" -Algorithm SHA256 | Format-List | Out-File -Encoding UTF8 "深情电脑答题助手-2.1.1识别修复版.exe.sha256.txt"
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Shenqing-PC-Quiz-Assistant-2.1-ThreeModes-EXE
+          name: Shenqing-PC-Quiz-Assistant-2.1.1-NumPyFix-EXE
           path: |
-            深情电脑答题助手-2.1三模式自动点击版.exe
-            深情电脑答题助手-2.1三模式自动点击版.exe.sha256.txt
+            深情电脑答题助手-2.1.1识别修复版.exe
+            深情电脑答题助手-2.1.1识别修复版.exe.sha256.txt
           if-no-files-found: error
           retention-days: 30
