@@ -1,0 +1,260 @@
+name: Build Full Auto Quiz 1.6.4
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "generated-apk/v164-trigger.txt"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply complete quiz interface calibration
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java')
+          text = path.read_text(encoding='utf-8')
+
+          # Faster OCR for the next question while retaining enough text clarity.
+          text = text.replace('now - lastProcessAt < 850L', 'now - lastProcessAt < 420L')
+          text = text.replace('int maxWidth = 1600;', 'int maxWidth = 1080;')
+
+          field_marker = '    private String lastClickedQuestion = "";\n'
+          if 'QUIZ_LAYOUT_V164' not in text:
+              if field_marker not in text:
+                  raise SystemExit('Unable to locate quiz state fields')
+              text = text.replace(
+                  field_marker,
+                  field_marker +
+                  '    private String pendingClickQuestion = "";\n' +
+                  '    private String pendingPageAction = "";\n' +
+                  '    private long lastPageActionAt;\n' +
+                  '    private static final String QUIZ_LAYOUT_V164 = "fixed-four-row-layout";\n',
+                  1)
+
+              handle_start = text.index('    private void handleOcrResult(Text result) {')
+              click_start = text.index('    private void tryAutoClickAnswer(Text result, QuestionBank.Match match) {')
+              handle_replacement = '''    private void handleOcrResult(Text result) {
+        // The complete interface also contains Start Quiz and Next Round buttons.
+        if (autoClick && tryAutoPageAction(result)) {
+            lastQuestion = "";
+            lastClickedQuestion = "";
+            pendingClickQuestion = "";
+            return;
+        }
+
+        List<String> lines = new ArrayList<>();
+        for (Text.TextBlock block : result.getTextBlocks()) {
+            for (Text.Line line : block.getLines()) {
+                String value = line.getText().trim();
+                if (!value.isEmpty()) lines.add(value);
+            }
+        }
+
+        QuestionBank.Match match = questionBank.findBest(lines, result.getText());
+        if (match == null) return;
+
+        if (!match.question.equals(lastQuestion)) {
+            lastQuestion = match.question;
+            lastClickedQuestion = "";
+            pendingClickQuestion = "";
+            updateOverlay("答案：" + match.answer +
+                    "\\n匹配 " + Math.round(match.score * 100) + "%" +
+                    (autoClick ? " · 等待点击" : ""));
+        }
+
+        if (autoClick) tryAutoClickAnswer(result, match);
+    }
+
+    private boolean tryAutoPageAction(Text result) {
+        if (!AutomationAccessibilityService.isReady()) return false;
+        long now = System.currentTimeMillis();
+        if (!pendingPageAction.isEmpty() || now - lastPageActionAt < 1800L) return false;
+
+        for (Text.TextBlock block : result.getTextBlocks()) {
+            for (Text.Line line : block.getLines()) {
+                Rect box = line.getBoundingBox();
+                if (box == null) continue;
+
+                String normalized = QuestionBank.normalize(line.getText());
+                String action = "";
+                if (normalized.contains("下一关")) action = "下一关";
+                else if (normalized.contains("开始答题")) action = "开始答题";
+                if (action.isEmpty()) continue;
+
+                float detectedY = box.centerY() / Math.max(0.01f, ocrScale) + ocrCropTop;
+                float screenX = screenWidth * 0.585f;
+                float screenY = clamp(detectedY,
+                        screenHeight * 0.20f, screenHeight * 0.88f);
+                final String finalAction = action;
+
+                pendingPageAction = finalAction;
+                lastPageActionAt = now;
+                updateOverlay("正在点击：" + finalAction);
+                boolean queued = AutomationAccessibilityService.performTap(
+                        screenX, screenY, success -> mainHandler.post(() -> {
+                            if (finalAction.equals(pendingPageAction)) {
+                                pendingPageAction = "";
+                            }
+                            if (success) {
+                                updateOverlay(finalAction + "已点击，等待下一题…");
+                            } else {
+                                lastPageActionAt = 0L;
+                                updateOverlay(finalAction + "点击失败，正在重试…");
+                            }
+                        }));
+                if (!queued) {
+                    pendingPageAction = "";
+                    lastPageActionAt = 0L;
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+'''
+              text = text[:handle_start] + handle_replacement + text[click_start:]
+
+              click_start = text.index('    private void tryAutoClickAnswer(Text result, QuestionBank.Match match) {')
+              target_start = text.index('    private AnswerTarget findAnswerTarget(Text result, String answerText) {')
+              click_replacement = '''    private void tryAutoClickAnswer(Text result, QuestionBank.Match match) {
+        if (!AutomationAccessibilityService.isReady()) {
+            updateOverlay("答案：" + match.answer + "\\n自动点击权限未开启");
+            return;
+        }
+        if (match.score < 0.68) return;
+
+        long now = System.currentTimeMillis();
+        if (match.question.equals(lastClickedQuestion) ||
+                match.question.equals(pendingClickQuestion) ||
+                now - lastClickAt < 650L) {
+            return;
+        }
+
+        AnswerTarget target = findAnswerTarget(result, match.answer);
+        if (target == null) return;
+
+        // The video shows four fixed horizontal answer bars. OCR determines the
+        // answer row; the gesture taps the centre of the whole bar.
+        float detectedY = target.centerY / Math.max(0.01f, ocrScale) + ocrCropTop;
+        float firstRowY = screenHeight * 0.551f;
+        float rowGap = screenHeight * 0.0536f;
+        int optionIndex = Math.round((detectedY - firstRowY) / rowGap);
+        optionIndex = Math.max(0, Math.min(3, optionIndex));
+
+        float screenX = screenWidth * 0.585f;
+        float screenY = firstRowY + rowGap * optionIndex;
+        final String clickQuestion = match.question;
+        final String clickAnswer = match.answer;
+        final int selectedOption = optionIndex + 1;
+
+        pendingClickQuestion = clickQuestion;
+        lastClickAt = now;
+        updateOverlay("答案：" + clickAnswer +
+                "\\n正在点击第" + selectedOption + "项…");
+
+        boolean queued = AutomationAccessibilityService.performTap(
+                screenX, screenY, success -> mainHandler.post(() -> {
+                    if (clickQuestion.equals(pendingClickQuestion)) {
+                        pendingClickQuestion = "";
+                    }
+                    if (!clickQuestion.equals(lastQuestion)) return;
+                    if (success) {
+                        lastClickedQuestion = clickQuestion;
+                        updateOverlay("答案：" + clickAnswer +
+                                "\\n已点击第" + selectedOption + "项");
+                    } else {
+                        lastClickAt = 0L;
+                        lastClickedQuestion = "";
+                        updateOverlay("答案：" + clickAnswer +
+                                "\\n点击失败，正在重新识别…");
+                    }
+                }));
+        if (!queued) {
+            pendingClickQuestion = "";
+            lastClickAt = 0L;
+            updateOverlay("答案：" + clickAnswer + "\\n自动点击权限未连接");
+        }
+    }
+
+'''
+              text = text[:click_start] + click_replacement + text[target_start:]
+
+          path.write_text(text, encoding='utf-8')
+
+          root = Path('build.gradle')
+          gradle = root.read_text(encoding='utf-8')
+          gradle = gradle.replace('versionCode 13', 'versionCode 14', 1)
+          gradle = gradle.replace('versionName "1.6.3"', 'versionName "1.6.4"', 1)
+          root.write_text(gradle, encoding='utf-8')
+          PY
+
+      - name: Commit calibrated source and record run
+        shell: bash
+        run: |
+          mkdir -p generated-apk
+          printf 'run_id=%s\ncommit=%s\nartifact=ShenqingAssistant-1.6.4-FullAutoQuiz-APK\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_SHA" > generated-apk/v164-manifest.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java \
+                  build.gradle generated-apk/v164-manifest.txt
+          git commit -m "Release full-auto fixed-layout quiz 1.6.4"
+          git pull --rebase origin main
+          git push origin HEAD:main
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android API 35
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build APK
+        shell: bash
+        run: gradle --no-daemon --stacktrace clean assembleDebug
+
+      - name: Prepare APK
+        shell: bash
+        run: |
+          test -f app/build/outputs/apk/debug/app-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk ShenqingAssistant-1.6.4-FullAutoQuiz.apk
+          sha256sum ShenqingAssistant-1.6.4-FullAutoQuiz.apk > ShenqingAssistant-1.6.4-FullAutoQuiz.apk.sha256
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShenqingAssistant-1.6.4-FullAutoQuiz-APK
+          path: |
+            ShenqingAssistant-1.6.4-FullAutoQuiz.apk
+            ShenqingAssistant-1.6.4-FullAutoQuiz.apk.sha256
+          if-no-files-found: error
+          retention-days: 30
