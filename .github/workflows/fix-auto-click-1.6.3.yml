@@ -1,0 +1,285 @@
+name: Fix Reliable Auto Click 1.6.3
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - ".github/workflows/fix-auto-click-1.6.3.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  fix-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Add gesture result callback and click retry
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          accessibility_path = Path('app/src/main/java/com/ruisi/changanmatch/AutomationAccessibilityService.java')
+          accessibility = accessibility_path.read_text(encoding='utf-8')
+          old_tap = '''    public static boolean performTap(float x, float y) {
+        AutomationAccessibilityService service = instance;
+        if (service == null) return false;
+        service.mainHandler.post(() -> {
+            Path path = new Path();
+            path.moveTo(x, y);
+            GestureDescription.StrokeDescription stroke =
+                    new GestureDescription.StrokeDescription(path, 0, 90);
+            GestureDescription gesture = new GestureDescription.Builder()
+                    .addStroke(stroke)
+                    .build();
+            service.dispatchGesture(gesture, null, null);
+        });
+        return true;
+    }
+'''
+          new_tap = '''    public interface TapCallback {
+        void onResult(boolean success);
+    }
+
+    public static boolean performTap(float x, float y) {
+        return performTap(x, y, null);
+    }
+
+    public static boolean performTap(float x, float y, TapCallback callback) {
+        AutomationAccessibilityService service = instance;
+        if (service == null) {
+            if (callback != null) callback.onResult(false);
+            return false;
+        }
+        service.mainHandler.post(() -> service.dispatchTapInternal(x, y, 0, callback));
+        return true;
+    }
+
+    private void dispatchTapInternal(float x, float y, int attempt, TapCallback callback) {
+        Path path = new Path();
+        path.moveTo(x, y);
+        // 极短移动比单点路径在部分国产系统上更稳定，视觉上仍是一次点击。
+        path.lineTo(x + 0.6f, y + 0.6f);
+        GestureDescription.StrokeDescription stroke =
+                new GestureDescription.StrokeDescription(path, 0, 115);
+        GestureDescription gesture = new GestureDescription.Builder()
+                .addStroke(stroke)
+                .build();
+
+        boolean accepted = dispatchGesture(gesture, new GestureResultCallback() {
+            @Override
+            public void onCompleted(GestureDescription gestureDescription) {
+                super.onCompleted(gestureDescription);
+                if (callback != null) callback.onResult(true);
+            }
+
+            @Override
+            public void onCancelled(GestureDescription gestureDescription) {
+                super.onCancelled(gestureDescription);
+                retryTapOrFinish(x, y, attempt, callback);
+            }
+        }, null);
+
+        if (!accepted) retryTapOrFinish(x, y, attempt, callback);
+    }
+
+    private void retryTapOrFinish(float x, float y, int attempt, TapCallback callback) {
+        if (attempt < 1 && instance == this) {
+            mainHandler.postDelayed(() -> dispatchTapInternal(x, y, attempt + 1, callback), 140L);
+        } else if (callback != null) {
+            callback.onResult(false);
+        }
+    }
+'''
+          if old_tap not in accessibility:
+              raise SystemExit('performTap source block not found')
+          accessibility_path.write_text(accessibility.replace(old_tap, new_tap, 1), encoding='utf-8')
+
+          service_path = Path('app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java')
+          service = service_path.read_text(encoding='utf-8')
+          service = service.replace(
+              '    private String lastClickedQuestion = "";\n',
+              '    private String lastClickedQuestion = "";\n' +
+              '    private String pendingClickQuestion = "";\n', 1)
+
+          old_guard = '''        if (match.question.equals(lastClickedQuestion) || now - lastClickAt < 1200L) {
+            return;
+        }
+'''
+          new_guard = '''        if (match.question.equals(lastClickedQuestion) ||
+                match.question.equals(pendingClickQuestion) ||
+                now - lastClickAt < 1200L) {
+            return;
+        }
+'''
+          if old_guard not in service:
+              raise SystemExit('click guard block not found')
+          service = service.replace(old_guard, new_guard, 1)
+
+          old_dispatch = '''        if (AutomationAccessibilityService.performTap(screenX, screenY)) {
+            lastClickedQuestion = match.question;
+            lastClickAt = now;
+            updateOverlay("答案：" + match.answer + "\\n已自动点击：" + target.text);
+        }
+'''
+          new_dispatch = '''        final String clickQuestion = match.question;
+        final String clickAnswer = match.answer;
+        pendingClickQuestion = clickQuestion;
+        lastClickAt = now;
+        updateOverlay("答案：" + clickAnswer + "\\n正在自动点击…");
+
+        boolean queued = AutomationAccessibilityService.performTap(screenX, screenY, success ->
+                mainHandler.post(() -> {
+                    if (clickQuestion.equals(pendingClickQuestion)) {
+                        pendingClickQuestion = "";
+                    }
+                    // 题目已经切换时，不再用上一题的回调覆盖当前提示。
+                    if (!clickQuestion.equals(lastQuestion)) return;
+                    if (success) {
+                        lastClickedQuestion = clickQuestion;
+                        updateOverlay("答案：" + clickAnswer + "\\n已自动点击");
+                    } else {
+                        lastClickAt = 0L;
+                        updateOverlay("答案：" + clickAnswer + "\\n点击被系统取消，正在重试");
+                    }
+                }));
+        if (!queued) {
+            pendingClickQuestion = "";
+            lastClickAt = 0L;
+            updateOverlay("答案：" + clickAnswer + "\\n自动点击权限未连接");
+        }
+'''
+          if old_dispatch not in service:
+              raise SystemExit('tap dispatch block not found')
+          service = service.replace(old_dispatch, new_dispatch, 1)
+
+          start = service.index('    private AnswerTarget findAnswerTarget(Text result, String answerText) {')
+          end = service.index('    private double answerLineScore(String line, String answer) {')
+          target_replacement = '''    private AnswerTarget findAnswerTarget(Text result, String answerText) {
+        String[] answers = answerText.split("\\\\s*/\\\\s*");
+        AnswerTarget best = null;
+        double bestScore = 0.0;
+
+        for (Text.TextBlock block : result.getTextBlocks()) {
+            List<Text.Line> blockLines = block.getLines();
+            for (int i = 0; i < blockLines.size(); i++) {
+                Text.Line line = blockLines.get(i);
+                Rect box = line.getBoundingBox();
+                if (box == null || box.centerY() < ocrBitmapHeight * 0.28f) continue;
+
+                double lineScore = bestAnswerCandidateScore(line.getText(), answers);
+                lineScore += Math.min(0.03,
+                        box.centerY() / (double) Math.max(1, ocrBitmapHeight) * 0.03);
+                if (lineScore > bestScore) {
+                    bestScore = lineScore;
+                    best = new AnswerTarget(line.getText(), box.centerX(), box.centerY());
+                }
+
+                // 部分游戏字体会把一个选项拆成两行，合并相邻行再次匹配。
+                if (i + 1 < blockLines.size()) {
+                    Text.Line next = blockLines.get(i + 1);
+                    Rect nextBox = next.getBoundingBox();
+                    if (nextBox != null && nextBox.top - box.bottom < ocrBitmapHeight * 0.08f) {
+                        Rect combinedBox = new Rect(box);
+                        combinedBox.union(nextBox);
+                        String combinedText = line.getText() + next.getText();
+                        double combinedScore = bestAnswerCandidateScore(combinedText, answers) + 0.015;
+                        if (combinedScore > bestScore) {
+                            bestScore = combinedScore;
+                            best = new AnswerTarget(combinedText,
+                                    combinedBox.centerX(), combinedBox.centerY());
+                        }
+                    }
+                }
+            }
+        }
+        return bestScore >= 0.74 ? best : null;
+    }
+
+    private double bestAnswerCandidateScore(String candidateText, String[] answers) {
+        String candidate = QuestionBank.normalize(candidateText);
+        if (candidate.isEmpty()) return 0.0;
+        double best = 0.0;
+        for (String answer : answers) {
+            String normalizedAnswer = QuestionBank.normalize(answer);
+            if (normalizedAnswer.isEmpty()) continue;
+            best = Math.max(best, answerLineScore(candidate, normalizedAnswer));
+        }
+        return best;
+    }
+
+'''
+          service = service[:start] + target_replacement + service[end:]
+
+          service = service.replace(
+              '        if (line.equals(answer)) return 1.0;\n',
+              '        if (line.equals(answer)) return 1.0;\n' +
+              '        if (answer.matches("[abcd]") && line.startsWith(answer)) return 0.995;\n', 1)
+
+          service_path.write_text(service, encoding='utf-8')
+
+          gradle_path = Path('app/build.gradle')
+          gradle = gradle_path.read_text(encoding='utf-8')
+          gradle = gradle.replace('versionCode 12', 'versionCode 13', 1)
+          gradle = gradle.replace('versionName "1.6.2"', 'versionName "1.6.3"', 1)
+          gradle_path.write_text(gradle, encoding='utf-8')
+          PY
+
+      - name: Commit reliable-click fix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/ruisi/changanmatch/AutomationAccessibilityService.java \
+                  app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java \
+                  app/build.gradle
+          git commit -m "Fix intermittent quiz auto-click and release 1.6.3"
+          git push origin HEAD:main
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android API 35
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build reliable-click APK
+        shell: bash
+        run: gradle --no-daemon --stacktrace clean assembleDebug
+
+      - name: Prepare APK
+        shell: bash
+        run: |
+          test -f app/build/outputs/apk/debug/app-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk ShenqingAssistant-1.6.3-ReliableClick.apk
+          sha256sum ShenqingAssistant-1.6.3-ReliableClick.apk > ShenqingAssistant-1.6.3-ReliableClick.apk.sha256
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShenqingAssistant-1.6.3-ReliableClick-APK
+          path: |
+            ShenqingAssistant-1.6.3-ReliableClick.apk
+            ShenqingAssistant-1.6.3-ReliableClick.apk.sha256
+          if-no-files-found: error
+          retention-days: 30
