@@ -5,6 +5,8 @@ SOURCE = Path("windows-assistant/main.py")
 
 def main() -> None:
     text = SOURCE.read_text(encoding="utf-8")
+    # Windows runners may check out Python files with CRLF line endings.
+    text = text.replace("\r\n", "\n")
     text = text.replace('APP_VERSION = "2.1.0"', 'APP_VERSION = "2.1.1"', 1)
 
     replacements = {
@@ -24,8 +26,8 @@ def main() -> None:
             raise RuntimeError(f"Expected OCR source line not found: {old.strip()}")
         text = text.replace(old, new, 1)
 
-    SOURCE.write_text(text, encoding="utf-8")
-    print("Applied minimal NumPy-safe RapidOCR parser for Windows 2.1.1")
+    SOURCE.write_text(text, encoding="utf-8", newline="\n")
+    print("Applied CRLF-safe NumPy OCR parser for Windows 2.1.1")
 
 
 if __name__ == "__main__":
