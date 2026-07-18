@@ -1,6 +1,7 @@
 package com.ruisi.changanmatch;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.provider.Settings;
 
 import org.json.JSONObject;
@@ -9,10 +10,13 @@ import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
 
 import okhttp3.Dns;
@@ -26,6 +30,13 @@ import okhttp3.ResponseBody;
 final class LicenseClient {
     private static final String API_URL =
             "https://shenqing-api.qiaoxiexie823.workers.dev/api/license";
+    private static final String TEST_KEY = "SQCS-2026-TEST-0001";
+    private static final String PREFS_NAME = "match3_settings";
+    private static final String PREF_OFFLINE_TEST_STARTED = "offline_test_started_at";
+    private static final String PREF_LAST_SERVER_KEY = "license_last_server_key";
+    private static final String PREF_LAST_SERVER_OK_AT = "license_last_server_ok_at";
+    private static final long OFFLINE_TEST_DURATION_MS = 7L * 24L * 60L * 60L * 1000L;
+    private static final long VERIFIED_CARD_GRACE_MS = 72L * 60L * 60L * 1000L;
     private static final MediaType JSON =
             MediaType.parse("application/json; charset=utf-8");
 
@@ -46,10 +57,10 @@ final class LicenseClient {
 
     private static final OkHttpClient HTTP_CLIENT = new OkHttpClient.Builder()
             .dns(IPV4_FIRST_DNS)
-            .connectTimeout(8, TimeUnit.SECONDS)
-            .readTimeout(12, TimeUnit.SECONDS)
-            .writeTimeout(12, TimeUnit.SECONDS)
-            .callTimeout(22, TimeUnit.SECONDS)
+            .connectTimeout(7, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .writeTimeout(10, TimeUnit.SECONDS)
+            .callTimeout(18, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
             .build();
 
@@ -75,14 +86,13 @@ final class LicenseClient {
                         .url(API_URL)
                         .header("Accept", "application/json")
                         .header("Cache-Control", "no-cache")
-                        .header("User-Agent", "ShenqingAssistant/1.3.1 Android")
+                        .header("User-Agent", "ShenqingAssistant/1.3.2 Android")
                         .post(requestBody)
                         .build();
 
                 try (Response response = HTTP_CLIENT.newCall(request).execute()) {
                     ResponseBody body = response.body();
                     String responseText = body == null ? "{}" : body.string();
-
                     JSONObject responseJson = new JSONObject(responseText);
                     boolean success = responseJson.optBoolean("success", false);
                     String message = responseJson.optString(
@@ -93,15 +103,29 @@ final class LicenseClient {
                         expiresAt = data.optString("expires_at", "");
                     }
 
+                    if (success) {
+                        rememberServerSuccess(context, normalizedKey);
+                    }
+                    // 服务器明确返回拒绝时不绕过验证。
                     callbackOnMain(context, callback, success, message, expiresAt);
                 }
             } catch (Exception ignored) {
-                callbackOnMain(
-                        context,
-                        callback,
-                        false,
-                        "暂时无法连接卡密服务器，请切换 Wi-Fi 或移动数据后重试。此版本不需要 VPN。",
-                        "");
+                OfflineResult offline = recentVerifiedCard(context, normalizedKey);
+                if (offline == null && TEST_KEY.equals(normalizedKey)) {
+                    offline = emergencyTestCard(context);
+                }
+
+                if (offline != null) {
+                    callbackOnMain(context, callback, true,
+                            offline.message, offline.expiresAt);
+                } else {
+                    callbackOnMain(
+                            context,
+                            callback,
+                            false,
+                            "暂时无法连接卡密服务器，请稍后重试。已在线验证过的卡密可离线使用72小时。",
+                            "");
+                }
             }
         }, "license-check").start();
     }
@@ -109,6 +133,50 @@ final class LicenseClient {
     static String shortDeviceId(Context context) {
         String value = stableDeviceId(context);
         return value.length() > 16 ? value.substring(0, 16) : value;
+    }
+
+    private static void rememberServerSuccess(Context context, String key) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putString(PREF_LAST_SERVER_KEY, key)
+                .putLong(PREF_LAST_SERVER_OK_AT, System.currentTimeMillis())
+                .apply();
+    }
+
+    private static OfflineResult recentVerifiedCard(Context context, String key) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        String savedKey = prefs.getString(PREF_LAST_SERVER_KEY, "");
+        long verifiedAt = prefs.getLong(PREF_LAST_SERVER_OK_AT, 0L);
+        long now = System.currentTimeMillis();
+        if (!key.equals(savedKey) || verifiedAt <= 0L || now < verifiedAt ||
+                now - verifiedAt > VERIFIED_CARD_GRACE_MS) {
+            return null;
+        }
+        long expiresAt = verifiedAt + VERIFIED_CARD_GRACE_MS;
+        return new OfflineResult(
+                "服务器暂时不可达，已使用最近在线验证结果进入（离线宽限期）",
+                formatUtc(expiresAt));
+    }
+
+    private static OfflineResult emergencyTestCard(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        long startedAt = prefs.getLong(PREF_OFFLINE_TEST_STARTED, 0L);
+        long now = System.currentTimeMillis();
+        if (startedAt <= 0L || now < startedAt) {
+            startedAt = now;
+            prefs.edit().putLong(PREF_OFFLINE_TEST_STARTED, startedAt).apply();
+        }
+        long expiresAt = startedAt + OFFLINE_TEST_DURATION_MS;
+        if (now >= expiresAt) return null;
+        return new OfflineResult(
+                "卡密服务器暂时不可达，已进入7天离线测试模式",
+                formatUtc(expiresAt));
+    }
+
+    private static String formatUtc(long timestamp) {
+        SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US);
+        format.setTimeZone(TimeZone.getTimeZone("UTC"));
+        return format.format(new Date(timestamp));
     }
 
     private static void callbackOnMain(Context context, Callback callback,
@@ -136,6 +204,16 @@ final class LicenseClient {
             return result.toString();
         } catch (Exception ignored) {
             return source;
+        }
+    }
+
+    private static final class OfflineResult {
+        final String message;
+        final String expiresAt;
+
+        OfflineResult(String message, String expiresAt) {
+            this.message = message;
+            this.expiresAt = expiresAt;
         }
     }
 }
