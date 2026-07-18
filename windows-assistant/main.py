@@ -29,11 +29,35 @@ from tkinter import messagebox, ttk
 
 APP_NAME = "深情电脑答题助手"
 APP_ID = "com.ruisi.changanpc"
+APP_VERSION = "2.1.0"
 PUBLIC_KEY_BASE64 = (
     "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE5BkWbuphUm0iSd3E54z+8QBy3HO3/"
     "SP11xAP4qKnF6YF/oQmxqUMdDpyjqM9w0sM0Iz9ZNV4IpLZveuz7qyOUA=="
 )
 WINDOW_KEYWORD = "长安幻想"
+
+MODE_DISPLAY = "仅显示答案"
+MODE_STABLE = "稳定自动点击"
+MODE_FAST = "极速自动点击"
+MODES = (MODE_DISPLAY, MODE_STABLE, MODE_FAST)
+MODE_INTERVAL = {
+    MODE_DISPLAY: 0.45,
+    MODE_STABLE: 0.32,
+    MODE_FAST: 0.18,
+}
+MODE_OPTION_THRESHOLD = {
+    MODE_DISPLAY: 0.0,
+    MODE_STABLE: 70.0,
+    MODE_FAST: 58.0,
+}
+
+# 1280×720 客户区中四个横条选项的中心比例：左上、右上、左下、右下。
+OPTION_CENTERS = (
+    (0.395, 0.636),
+    (0.716, 0.636),
+    (0.395, 0.736),
+    (0.716, 0.736),
+)
 
 PURPLE = "#5B3DAA"
 PURPLE_DARK = "#3D2970"
@@ -41,6 +65,7 @@ PAGE_BG = "#F7F5FC"
 TEXT_DARK = "#373640"
 TEXT_MUTED = "#706C7C"
 GREEN = "#187D4C"
+ORANGE = "#BE681C"
 RED = "#BE2D2D"
 
 user32 = ctypes.windll.user32
@@ -83,6 +108,24 @@ class QuestionEntry:
     question: str
     answer: str
     normalized: str
+
+
+@dataclass(frozen=True)
+class OCRLine:
+    text: str
+    left: float
+    top: float
+    right: float
+    bottom: float
+    score: float = 1.0
+
+    @property
+    def center_x(self) -> float:
+        return (self.left + self.right) / 2.0
+
+    @property
+    def center_y(self) -> float:
+        return (self.top + self.bottom) / 2.0
 
 
 def resource_path(name: str) -> Path:
@@ -154,7 +197,6 @@ def verify_license(license_key: str, current_machine_id: str) -> LicenseResult:
 
         target = normalized_id if card_type == "D" else "*"
         payload = f"SQ2|{card_type}|{expiry_token}|{nonce}|{target}".encode("utf-8")
-
         public_key = serialization.load_der_public_key(base64.b64decode(PUBLIC_KEY_BASE64))
         signature_text = parts[4] + "=" * ((4 - len(parts[4]) % 4) % 4)
         signature = base64.urlsafe_b64decode(signature_text.encode("ascii"))
@@ -175,6 +217,22 @@ def verify_license(license_key: str, current_machine_id: str) -> LicenseResult:
         return LicenseResult(False, "卡密验证失败")
 
 
+def read_window_info(hwnd: int, title: str = "") -> WindowInfo | None:
+    if not user32.IsWindow(hwnd) or user32.IsIconic(hwnd):
+        return None
+    rect = RECT()
+    if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+        return None
+    point = POINT(0, 0)
+    if not user32.ClientToScreen(hwnd, ctypes.byref(point)):
+        return None
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+    if width <= 300 or height <= 200:
+        return None
+    return WindowInfo(int(hwnd), title, point.x, point.y, width, height)
+
+
 def enum_game_windows() -> list[WindowInfo]:
     windows: list[WindowInfo] = []
     callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
@@ -190,21 +248,33 @@ def enum_game_windows() -> list[WindowInfo]:
         title = buffer.value.strip()
         if WINDOW_KEYWORD not in title:
             return True
-
-        rect = RECT()
-        if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
-            return True
-        point = POINT(0, 0)
-        if not user32.ClientToScreen(hwnd, ctypes.byref(point)):
-            return True
-        width = rect.right - rect.left
-        height = rect.bottom - rect.top
-        if width > 300 and height > 200:
-            windows.append(WindowInfo(int(hwnd), title, point.x, point.y, width, height))
+        info = read_window_info(int(hwnd), title)
+        if info is not None:
+            windows.append(info)
         return True
 
     user32.EnumWindows(callback_type(callback), 0)
     return windows
+
+
+def click_screen(hwnd: int, x: int, y: int) -> bool:
+    """使用真实鼠标事件点击，游戏客户端兼容性高；点击后恢复原鼠标位置。"""
+    if not user32.IsWindow(hwnd) or user32.IsIconic(hwnd):
+        return False
+    old = POINT()
+    user32.GetCursorPos(ctypes.byref(old))
+    try:
+        user32.SetForegroundWindow(hwnd)
+        time.sleep(0.045)
+        user32.SetCursorPos(int(x), int(y))
+        time.sleep(0.025)
+        user32.mouse_event(0x0002, 0, 0, 0, 0)  # LEFTDOWN
+        time.sleep(0.035)
+        user32.mouse_event(0x0004, 0, 0, 0, 0)  # LEFTUP
+        time.sleep(0.045)
+        return True
+    finally:
+        user32.SetCursorPos(old.x, old.y)
 
 
 class QuestionBank:
@@ -227,7 +297,6 @@ class QuestionBank:
                 normalized = normalize_text(question)
                 if answer and normalized:
                     self.entries.append(QuestionEntry(question, answer, normalized))
-
         self.normalized_questions = [entry.normalized for entry in self.entries]
 
     @property
@@ -237,25 +306,24 @@ class QuestionBank:
     def find_best(self, lines: Iterable[str], full_text: str) -> tuple[QuestionEntry, float] | None:
         source_lines = [line.strip() for line in lines if line and line.strip()]
         segments: list[str] = []
-        for index, line in enumerate(source_lines[:28]):
+        for index, line in enumerate(source_lines[:20]):
             if len(normalize_text(line)) >= 3:
                 segments.append(line)
             if index + 1 < len(source_lines):
                 segments.append(line + source_lines[index + 1])
             if index + 2 < len(source_lines):
                 segments.append(line + source_lines[index + 1] + source_lines[index + 2])
-        if full_text and len(full_text) < 600:
+        if full_text and len(full_text) < 420:
             segments.append(full_text)
 
         normalized_full = normalize_text(full_text)
-        best_entry: QuestionEntry | None = None
-        best_score = 0.0
-
         for entry in self.entries:
             if len(entry.normalized) >= 4 and entry.normalized in normalized_full:
                 return entry, 99.9
 
-        for segment in segments[:70]:
+        best_entry: QuestionEntry | None = None
+        best_score = 0.0
+        for segment in segments[:48]:
             normalized = normalize_text(segment)
             if len(normalized) < 3:
                 continue
@@ -268,15 +336,16 @@ class QuestionBank:
             if result is None:
                 continue
             _choice, score, index = result
-            length_ratio = min(len(normalized), len(self.entries[index].normalized)) / max(
-                1, max(len(normalized), len(self.entries[index].normalized))
+            entry = self.entries[index]
+            length_ratio = min(len(normalized), len(entry.normalized)) / max(
+                1, max(len(normalized), len(entry.normalized))
             )
             adjusted = float(score) * (0.82 + 0.18 * length_ratio)
             if adjusted > best_score:
                 best_score = adjusted
-                best_entry = self.entries[index]
+                best_entry = entry
 
-        if best_entry is None or best_score < 60:
+        if best_entry is None or best_score < 59:
             return None
         return best_entry, best_score
 
@@ -287,7 +356,7 @@ class OverlayWindow:
         self.window.withdraw()
         self.window.overrideredirect(True)
         self.window.attributes("-topmost", True)
-        self.window.attributes("-alpha", 0.93)
+        self.window.attributes("-alpha", 0.94)
         self.window.configure(bg=PURPLE_DARK)
         self.label = tk.Label(
             self.window,
@@ -317,10 +386,10 @@ class OverlayWindow:
     def show(self, game: WindowInfo | None = None) -> None:
         if game is not None:
             x = max(8, game.left + game.width - 455)
-            y = max(8, game.top + 55)
-            self.window.geometry(f"430x128+{x}+{y}")
+            y = max(8, game.top + 44)
+            self.window.geometry(f"430x116+{x}+{y}")
         else:
-            self.window.geometry("430x128+30+80")
+            self.window.geometry("430x116+30+80")
         self.window.deiconify()
         self.window.lift()
 
@@ -335,9 +404,9 @@ class OverlayWindow:
 class ShenqingPCApp:
     def __init__(self) -> None:
         self.root = tk.Tk()
-        self.root.title(APP_NAME)
-        self.root.geometry("620x590")
-        self.root.minsize(620, 590)
+        self.root.title(f"{APP_NAME} {APP_VERSION}")
+        self.root.geometry("650x650")
+        self.root.minsize(650, 650)
         self.root.configure(bg=PAGE_BG)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -350,11 +419,17 @@ class ShenqingPCApp:
         self.selected_window: WindowInfo | None = None
         self.ocr_engine: RapidOCR | None = None
         self.question_bank: QuestionBank | None = None
+        self.engine_lock = threading.Lock()
+        self.engine_ready = threading.Event()
+        self.engine_error: str | None = None
         self.stop_event = threading.Event()
         self.worker: threading.Thread | None = None
         self.overlay = OverlayWindow(self.root)
         self.last_question = ""
+        self.last_clicked_question = ""
+        self.same_question_count = 0
         self.miss_count = 0
+        self.last_click_at = 0.0
 
         self._configure_style()
         self.container = tk.Frame(self.root, bg=PAGE_BG)
@@ -362,11 +437,13 @@ class ShenqingPCApp:
         self.countdown_var = tk.StringVar(value="卡密未激活")
         self.status_var = tk.StringVar(value="等待启动")
         self.window_var = tk.StringVar()
-        self.interval_var = tk.StringVar(value="0.7 秒")
+        saved_mode = self.saved_config.get("mode", MODE_STABLE)
+        self.mode_var = tk.StringVar(value=saved_mode if saved_mode in MODES else MODE_STABLE)
         self.manual_var = tk.StringVar()
 
         if self.active_license.valid:
             self._build_main_page()
+            self._warm_engine_async()
         else:
             self._build_activation_page()
         self._tick_license()
@@ -385,7 +462,6 @@ class ShenqingPCApp:
         style.map("Primary.TButton", background=[("active", "#6D4CC0")])
         style.configure("Secondary.TButton", background="white", foreground=PURPLE, font=("Microsoft YaHei UI", 10), padding=8)
         style.configure("Green.TLabel", background=PAGE_BG, foreground=GREEN, font=("Microsoft YaHei UI", 10, "bold"))
-        style.configure("Danger.TLabel", background=PAGE_BG, foreground=RED, font=("Microsoft YaHei UI", 10, "bold"))
 
     def _clear(self) -> None:
         for child in self.container.winfo_children():
@@ -395,7 +471,7 @@ class ShenqingPCApp:
         ttk.Label(self.container, text=APP_NAME, style="Title.TLabel").pack(anchor="center")
         ttk.Label(
             self.container,
-            text="《长安幻想》电脑端 · 本地题库 · 本地 OCR",
+            text=f"Windows {APP_VERSION} · 3603道本地题库 · 当前题目自动点击",
             style="Subtitle.TLabel",
         ).pack(anchor="center", pady=(2, 14))
 
@@ -411,9 +487,9 @@ class ShenqingPCApp:
         ttk.Label(card, text="离线卡密激活", style="CardTitle.TLabel").pack(anchor="center")
         ttk.Label(
             card,
-            text="复制本机号到原来的“深情卡密生成器”中生成卡密。支持本机绑定卡密和通用卡密。",
+            text="复制本机号到原来的“深情卡密生成器”中生成卡密。支持本机绑定和通用卡密。",
             style="Card.TLabel",
-            wraplength=520,
+            wraplength=540,
             justify="center",
         ).pack(pady=(8, 15))
 
@@ -430,12 +506,6 @@ class ShenqingPCApp:
         self.activation_status = ttk.Label(card, text="无需联网验证", style="Card.TLabel")
         self.activation_status.pack(anchor="center", pady=9)
         ttk.Button(card, text="激活并进入", style="Primary.TButton", command=self.activate).pack(fill="x")
-
-        ttk.Label(
-            self.container,
-            text="卡密格式与手机端完全一致，由原卡密生成器签发。",
-            style="Subtitle.TLabel",
-        ).pack(anchor="center", pady=10)
 
     def _build_main_page(self) -> None:
         self._clear()
@@ -454,23 +524,32 @@ class ShenqingPCApp:
         ttk.Button(row, text="刷新窗口", style="Secondary.TButton", command=self.refresh_windows).pack(side="right")
         ttk.Label(
             window_card,
-            text="请保持《长安幻想》桌面版为 1280×720 窗口模式。",
+            text="请保持《长安幻想》桌面版为 1280×720；窗口可以移动，但不要缩放。",
             style="Card.TLabel",
         ).pack(anchor="w", pady=(4, 0))
 
         control_card = self._card()
-        ttk.Label(control_card, text="识题控制", style="CardTitle.TLabel").pack(anchor="w")
-        interval_row = ttk.Frame(control_card, style="Card.TFrame")
-        interval_row.pack(fill="x", pady=(10, 6))
-        ttk.Label(interval_row, text="识别间隔", style="Card.TLabel").pack(side="left")
-        interval_combo = ttk.Combobox(
-            interval_row,
-            textvariable=self.interval_var,
-            values=["0.5 秒", "0.7 秒", "1.0 秒"],
-            width=10,
+        ttk.Label(control_card, text="识题模式", style="CardTitle.TLabel").pack(anchor="w")
+        mode_row = ttk.Frame(control_card, style="Card.TFrame")
+        mode_row.pack(fill="x", pady=(10, 6))
+        ttk.Label(mode_row, text="运行模式", style="Card.TLabel").pack(side="left")
+        mode_combo = ttk.Combobox(
+            mode_row,
+            textvariable=self.mode_var,
+            values=list(MODES),
+            width=18,
             state="readonly",
         )
-        interval_combo.pack(side="right")
+        mode_combo.pack(side="right")
+        mode_combo.bind("<<ComboboxSelected>>", self._on_mode_selected)
+
+        ttk.Label(
+            control_card,
+            text="仅处理当前题目：不会点击“开始答题”，也不会点击“下一题/下一关”。正常识别和显示/点击目标控制在5秒内。",
+            style="Card.TLabel",
+            wraplength=550,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 8))
 
         buttons = ttk.Frame(control_card, style="Card.TFrame")
         buttons.pack(fill="x", pady=(5, 8))
@@ -483,7 +562,7 @@ class ShenqingPCApp:
         self.manual_entry = ttk.Entry(manual_card, textvariable=self.manual_var, font=("Microsoft YaHei UI", 11))
         self.manual_entry.pack(fill="x", ipady=7, pady=(9, 6))
         ttk.Button(manual_card, text="查询答案", style="Secondary.TButton", command=self.manual_lookup).pack(fill="x")
-        self.manual_result = ttk.Label(manual_card, text="题库正在等待加载", style="Card.TLabel", wraplength=520, justify="left")
+        self.manual_result = ttk.Label(manual_card, text="题库与OCR正在后台预热", style="Card.TLabel", wraplength=540, justify="left")
         self.manual_result.pack(fill="x", pady=(9, 0))
 
         footer = ttk.Frame(self.container)
@@ -518,6 +597,7 @@ class ShenqingPCApp:
         self.active_license = result
         messagebox.showinfo(APP_NAME, "卡密激活成功")
         self._build_main_page()
+        self._warm_engine_async()
 
     def _tick_license(self) -> None:
         if self.active_license.valid:
@@ -560,16 +640,49 @@ class ShenqingPCApp:
     def _on_window_selected(self, _event: tk.Event | None = None) -> None:
         self.selected_window = self.windows.get(self.window_var.get())
 
+    def _on_mode_selected(self, _event: tk.Event | None = None) -> None:
+        mode = self.mode_var.get()
+        if mode not in MODES:
+            mode = MODE_STABLE
+            self.mode_var.set(mode)
+        self._save_config({"mode": mode})
+        self.last_clicked_question = ""
+        self.same_question_count = 0
+        self.status_var.set(f"已切换：{mode}")
+
+    def _warm_engine_async(self) -> None:
+        if self.engine_ready.is_set() or (self.worker and self.worker.is_alive()):
+            return
+
+        def warm() -> None:
+            try:
+                self._ensure_engine()
+                self.root.after(0, lambda: self.status_var.set("题库与OCR已就绪"))
+                if hasattr(self, "manual_result"):
+                    self.root.after(0, lambda: self.manual_result.configure(text=f"题库已载入 {self.question_bank.size if self.question_bank else 0} 道题"))
+            except Exception as error:
+                self.engine_error = str(error)
+                self.root.after(0, lambda: self.status_var.set("OCR加载失败，请重新启动"))
+
+        threading.Thread(target=warm, daemon=True).start()
+
     def _ensure_engine(self) -> None:
-        if self.question_bank is None:
-            self.status_var.set("正在载入 3603 道题库…")
-            self.root.update_idletasks()
-            self.question_bank = QuestionBank(resource_path("questions.jsonl"))
-            self.manual_result.configure(text=f"题库已载入 {self.question_bank.size} 道题")
-        if self.ocr_engine is None:
-            self.status_var.set("正在载入中文 OCR 模型…")
-            self.root.update_idletasks()
-            self.ocr_engine = RapidOCR()
+        if self.engine_ready.is_set():
+            return
+        with self.engine_lock:
+            if self.engine_ready.is_set():
+                return
+            if self.question_bank is None:
+                self.question_bank = QuestionBank(resource_path("questions.jsonl"))
+            if self.ocr_engine is None:
+                self.ocr_engine = RapidOCR()
+                # 小图预热一次，后续第一道题无需再初始化推理会话。
+                warm_image = np.full((96, 320, 3), 255, dtype=np.uint8)
+                try:
+                    self.ocr_engine(warm_image)
+                except Exception:
+                    pass
+            self.engine_ready.set()
 
     def start_recognition(self) -> None:
         if not self.active_license.valid:
@@ -585,14 +698,24 @@ class ShenqingPCApp:
             self.status_var.set("识题已经在运行")
             return
         try:
+            self.status_var.set("正在确认OCR模型…")
+            self.root.update_idletasks()
             self._ensure_engine()
         except Exception as error:
             messagebox.showerror(APP_NAME, f"OCR 或题库加载失败：\n{error}")
             return
+
         self.stop_event.clear()
+        current = read_window_info(self.selected_window.hwnd, self.selected_window.title)
+        if current is not None:
+            self.selected_window = current
         self.overlay.show(self.selected_window)
-        self.overlay.update("题库已载入，等待识别题目…")
+        self.overlay.update(f"{self.mode_var.get()}\n等待当前题目…")
         self.status_var.set("正在识别游戏窗口")
+        self.last_question = ""
+        self.last_clicked_question = ""
+        self.same_question_count = 0
+        self.miss_count = 0
         self.worker = threading.Thread(target=self._recognition_loop, daemon=True)
         self.worker.start()
 
@@ -607,31 +730,32 @@ class ShenqingPCApp:
         else:
             self.overlay.hide()
 
-    def _interval_seconds(self) -> float:
-        try:
-            return float(self.interval_var.get().split()[0])
-        except Exception:
-            return 0.7
-
-    def _window_is_valid(self, window: WindowInfo) -> bool:
-        return bool(user32.IsWindow(window.hwnd) and not user32.IsIconic(window.hwnd))
+    def _mode_interval(self) -> float:
+        return MODE_INTERVAL.get(self.mode_var.get(), 0.32)
 
     def _recognition_loop(self) -> None:
         assert self.question_bank is not None
         assert self.ocr_engine is not None
         with mss.mss() as capture:
             while not self.stop_event.is_set():
-                window = self.selected_window
-                if window is None or not self._window_is_valid(window):
-                    self.root.after(0, lambda: self.status_var.set("游戏窗口已关闭或最小化"))
-                    time.sleep(1.0)
+                selected = self.selected_window
+                if selected is None:
+                    time.sleep(0.5)
                     continue
+                window = read_window_info(selected.hwnd, selected.title)
+                if window is None:
+                    self.root.after(0, lambda: self.status_var.set("游戏窗口已关闭或最小化"))
+                    time.sleep(0.8)
+                    continue
+                self.selected_window = window
+
+                cycle_started = time.perf_counter()
                 try:
-                    # Crop the question dialog and options while excluding most background UI.
-                    crop_left = window.left + int(window.width * 0.11)
-                    crop_top = window.top + int(window.height * 0.12)
-                    crop_width = int(window.width * 0.76)
-                    crop_height = int(window.height * 0.75)
+                    # 只截取答题白框和四个选项，不扫描开始答题或结算按钮。
+                    crop_left = window.left + int(window.width * 0.225)
+                    crop_top = window.top + int(window.height * 0.205)
+                    crop_width = int(window.width * 0.665)
+                    crop_height = int(window.height * 0.610)
                     shot = capture.grab(
                         {
                             "left": crop_left,
@@ -641,50 +765,171 @@ class ShenqingPCApp:
                         }
                     )
                     image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-                    lines, full_text = self._run_ocr(np.asarray(image))
-                    match = self.question_bank.find_best(lines, full_text)
+                    ocr_lines, full_text = self._run_ocr(np.asarray(image))
+                    match = self.question_bank.find_best([line.text for line in ocr_lines], full_text)
+
                     if match is None:
                         self.miss_count += 1
-                        if self.miss_count >= 3:
+                        if self.miss_count >= 2:
                             self.last_question = ""
-                            self.root.after(0, lambda: self.overlay.update("正在等待下一道题…"))
+                            self.last_clicked_question = ""
+                            self.same_question_count = 0
+                            self.root.after(0, lambda: self.overlay.update(f"{self.mode_var.get()}\n等待当前题目…"))
                     else:
                         self.miss_count = 0
                         entry, score = match
-                        if entry.question != self.last_question:
+                        if entry.question == self.last_question:
+                            self.same_question_count += 1
+                        else:
                             self.last_question = entry.question
-                            display = f"答案：{entry.answer}\n题目：{entry.question}\n匹配：{score:.0f}%"
-                            self.root.after(0, lambda text=display: self.overlay.update(text))
-                            self.root.after(0, lambda: self.status_var.set("已识别到题目"))
+                            self.last_clicked_question = ""
+                            self.same_question_count = 1
+
+                        elapsed = time.perf_counter() - cycle_started
+                        display = f"答案：{entry.answer}\n匹配：{score:.0f}% · {elapsed:.1f}秒"
+                        self.root.after(0, lambda text=display: self.overlay.update(text))
+                        self.root.after(0, lambda: self.status_var.set("已识别到当前题目"))
+
+                        mode = self.mode_var.get()
+                        if mode != MODE_DISPLAY and entry.question != self.last_clicked_question:
+                            required_frames = 2 if mode == MODE_STABLE else 1
+                            if self.same_question_count >= required_frames:
+                                option = self._find_answer_option(
+                                    ocr_lines,
+                                    entry.answer,
+                                    window,
+                                    crop_left,
+                                    crop_top,
+                                )
+                                if option is not None:
+                                    option_index, option_score = option
+                                    threshold = MODE_OPTION_THRESHOLD.get(mode, 70.0)
+                                    if option_score >= threshold and time.monotonic() - self.last_click_at >= 0.55:
+                                        self._click_option(window, option_index, entry, score, option_score)
                 except Exception as error:
                     self.root.after(0, lambda text=str(error): self.status_var.set(f"识别异常：{text[:70]}"))
-                self.stop_event.wait(self._interval_seconds())
 
-    def _run_ocr(self, image: np.ndarray) -> tuple[list[str], str]:
+                spent = time.perf_counter() - cycle_started
+                self.stop_event.wait(max(0.02, self._mode_interval() - min(spent, self._mode_interval())))
+
+    def _run_ocr(self, image: np.ndarray) -> tuple[list[OCRLine], str]:
         assert self.ocr_engine is not None
         output = self.ocr_engine(image)
-        texts: list[str] = []
+        lines: list[OCRLine] = []
 
         if hasattr(output, "txts"):
-            raw = getattr(output, "txts")
-            if raw is not None:
-                texts = [str(value).strip() for value in raw if str(value).strip()]
-        elif isinstance(output, tuple):
-            payload = output[0] if output else None
-            if payload:
+            texts = list(getattr(output, "txts") or [])
+            boxes = list(getattr(output, "boxes") or [])
+            scores = list(getattr(output, "scores") or [])
+            for index, raw_text in enumerate(texts):
+                text = str(raw_text).strip()
+                if not text:
+                    continue
+                box = boxes[index] if index < len(boxes) else None
+                score = float(scores[index]) if index < len(scores) else 1.0
+                lines.append(self._ocr_line(text, box, score))
+        else:
+            payload = output[0] if isinstance(output, tuple) and output else output
+            if isinstance(payload, list):
                 for item in payload:
-                    if isinstance(item, (list, tuple)) and len(item) >= 2:
-                        value = str(item[1]).strip()
-                        if value:
-                            texts.append(value)
-        elif isinstance(output, list):
-            for item in output:
-                if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    value = str(item[1]).strip()
-                    if value:
-                        texts.append(value)
+                    if not isinstance(item, (list, tuple)) or len(item) < 2:
+                        continue
+                    box = item[0]
+                    text = str(item[1]).strip()
+                    score = float(item[2]) if len(item) >= 3 else 1.0
+                    if text:
+                        lines.append(self._ocr_line(text, box, score))
 
-        return texts, "\n".join(texts)
+        return lines, "\n".join(line.text for line in lines)
+
+    @staticmethod
+    def _ocr_line(text: str, box: Any, score: float) -> OCRLine:
+        try:
+            points = np.asarray(box, dtype=float).reshape(-1, 2)
+            left = float(points[:, 0].min())
+            right = float(points[:, 0].max())
+            top = float(points[:, 1].min())
+            bottom = float(points[:, 1].max())
+            return OCRLine(text, left, top, right, bottom, score)
+        except Exception:
+            return OCRLine(text, 0.0, 0.0, 0.0, 0.0, score)
+
+    def _find_answer_option(
+        self,
+        lines: list[OCRLine],
+        answer_text: str,
+        window: WindowInfo,
+        crop_left: int,
+        crop_top: int,
+    ) -> tuple[int, float] | None:
+        option_texts: list[list[str]] = [[], [], [], []]
+
+        for line in lines:
+            if line.right <= line.left or line.bottom <= line.top:
+                continue
+            global_x = crop_left + line.center_x
+            global_y = crop_top + line.center_y
+            x_ratio = (global_x - window.left) / max(1, window.width)
+            y_ratio = (global_y - window.top) / max(1, window.height)
+
+            # 只接受四个答案横条区域，排除题目、答题者和倒计时文字。
+            if not (0.23 <= x_ratio <= 0.88 and 0.585 <= y_ratio <= 0.795):
+                continue
+
+            distances = [
+                ((x_ratio - center_x) / 0.22) ** 2 + ((y_ratio - center_y) / 0.075) ** 2
+                for center_x, center_y in OPTION_CENTERS
+            ]
+            index = int(np.argmin(distances))
+            if distances[index] <= 2.2:
+                option_texts[index].append(line.text)
+
+        answer_candidates = [normalize_text(part) for part in answer_text.split("/") if normalize_text(part)]
+        if not answer_candidates:
+            answer_candidates = [normalize_text(answer_text)]
+
+        best_index = -1
+        best_score = 0.0
+        for index, pieces in enumerate(option_texts):
+            option_value = normalize_text("".join(pieces))
+            if not option_value:
+                continue
+            for answer in answer_candidates:
+                if answer == option_value or answer in option_value or option_value in answer:
+                    score = 100.0 if len(answer) == len(option_value) else 94.0
+                else:
+                    score = float(fuzz.WRatio(answer, option_value))
+                if score > best_score:
+                    best_score = score
+                    best_index = index
+
+        return None if best_index < 0 else (best_index, best_score)
+
+    def _click_option(
+        self,
+        window: WindowInfo,
+        option_index: int,
+        entry: QuestionEntry,
+        question_score: float,
+        option_score: float,
+    ) -> None:
+        center_x, center_y = OPTION_CENTERS[option_index]
+        screen_x = window.left + int(window.width * center_x)
+        screen_y = window.top + int(window.height * center_y)
+        self.last_click_at = time.monotonic()
+
+        success = click_screen(window.hwnd, screen_x, screen_y)
+        if success:
+            self.last_clicked_question = entry.question
+            text = (
+                f"答案：{entry.answer}\n"
+                f"已点击第{option_index + 1}项 · 题目{question_score:.0f}%/选项{option_score:.0f}%"
+            )
+            self.root.after(0, lambda value=text: self.overlay.update(value))
+            self.root.after(0, lambda: self.status_var.set("正确答案已点击"))
+        else:
+            self.last_click_at = 0.0
+            self.root.after(0, lambda: self.status_var.set("点击未执行，正在重新识别"))
 
     def manual_lookup(self) -> None:
         query = self.manual_var.get().strip()
