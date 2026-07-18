@@ -30,12 +30,12 @@ jobs:
           @"
           run_id=$env:GITHUB_RUN_ID
           commit=$env:GITHUB_SHA
-          artifact=Shenqing-PC-Quiz-Assistant-EXE
+          artifact=Shenqing-PC-Quiz-Assistant-1.1-Fast-EXE
           "@ | Set-Content -Encoding UTF8 generated-pc/manifest.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add generated-pc/manifest.txt
-          git commit -m "Record Windows quiz assistant build run" 2>$null
+          git commit -m "Record Windows quiz assistant 1.1 build run" 2>$null
           if ($LASTEXITCODE -eq 0) {
             git pull --rebase origin $env:GITHUB_REF_NAME
             git push origin "HEAD:$env:GITHUB_REF_NAME"
@@ -54,6 +54,13 @@ jobs:
           python -m pip install --upgrade pip wheel setuptools
           pip install -r windows-assistant/requirements.txt
 
+      - name: Apply sub-three-second optimization
+        shell: pwsh
+        run: |
+          python windows-assistant/patch_fast_3s.py
+          Select-String -Path windows-assistant/main.py -Pattern "3秒保护" -Quiet | Out-Null
+          if (!$?) { throw "Fast recognition patch was not applied" }
+
       - name: Verify question bank and imports
         shell: pwsh
         run: |
@@ -66,7 +73,7 @@ jobs:
         shell: pwsh
         run: |
           pyinstaller --noconfirm --clean --onefile --windowed `
-            --name "ShenqingPCQuizAssistant" `
+            --name "ShenqingPCQuizAssistantFast" `
             --add-data "app/src/main/assets/questions.jsonl;." `
             --collect-all rapidocr `
             --collect-all onnxruntime `
@@ -77,16 +84,16 @@ jobs:
       - name: Prepare download
         shell: pwsh
         run: |
-          if (!(Test-Path dist/ShenqingPCQuizAssistant.exe)) { throw "EXE was not generated" }
-          Copy-Item dist/ShenqingPCQuizAssistant.exe "深情电脑答题助手.exe"
-          Get-FileHash "深情电脑答题助手.exe" -Algorithm SHA256 | Format-List | Out-File -Encoding UTF8 "深情电脑答题助手.exe.sha256.txt"
+          if (!(Test-Path dist/ShenqingPCQuizAssistantFast.exe)) { throw "EXE was not generated" }
+          Copy-Item dist/ShenqingPCQuizAssistantFast.exe "深情电脑答题助手-1.1极速版.exe"
+          Get-FileHash "深情电脑答题助手-1.1极速版.exe" -Algorithm SHA256 | Format-List | Out-File -Encoding UTF8 "深情电脑答题助手-1.1极速版.exe.sha256.txt"
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Shenqing-PC-Quiz-Assistant-EXE
+          name: Shenqing-PC-Quiz-Assistant-1.1-Fast-EXE
           path: |
-            深情电脑答题助手.exe
-            深情电脑答题助手.exe.sha256.txt
+            深情电脑答题助手-1.1极速版.exe
+            深情电脑答题助手-1.1极速版.exe.sha256.txt
           if-no-files-found: error
           retention-days: 30
