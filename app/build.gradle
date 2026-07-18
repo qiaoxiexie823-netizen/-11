@@ -10,8 +10,8 @@ android {
         applicationId "com.ruisi.changanmatch"
         minSdk 23
         targetSdk 35
-        versionCode 9
-        versionName "1.5.0"
+        versionCode 10
+        versionName "1.6.0"
     }
 
     compileOptions {
@@ -31,4 +31,7 @@ android {
     }
 }
 
-dependencies { }
+dependencies {
+    // 中文 OCR 模型随 APK 打包，运行时不下载、不上传识别内容。
+    implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
+}
