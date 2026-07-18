@@ -7,14 +7,16 @@ on:
     paths-ignore:
       - "README.md"
       - "使用说明.txt"
+  pull_request:
+    branches: [ "main" ]
 
 permissions:
   contents: write
 
 jobs:
   patch-embedded-quiz:
-    name: Patch embedded quiz branch
-    if: contains(github.event.head_commit.message, '[patch-embedded-quiz]')
+    name: Connect embedded quiz entry
+    if: github.event_name == 'pull_request' && github.head_ref == 'feature/embed-quiz-bank'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,6 +30,9 @@ jobs:
           from pathlib import Path
           path = Path('app/src/main/java/com/ruisi/changanmatch/MainActivity.java')
           text = path.read_text(encoding='utf-8')
+          if 'startActivity(new Intent(this, QuizActivity.class));' in text:
+              print('Quiz entry already connected')
+              raise SystemExit(0)
           start = text.index('    private void renderQuizTab(LinearLayout root) {')
           end = text.index('    private void activateOfflineLicense(EditText input, TextView status) {')
           replacement = '''    private void renderQuizTab(LinearLayout root) {
@@ -76,11 +81,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Finish embedded 3603-question quiz integration"
-          git push origin HEAD:feature/embed-quiz-bank
+          if ! git diff --cached --quiet; then
+            git commit -m "Finish embedded 3603-question quiz integration"
+            git push origin HEAD:feature/embed-quiz-bank
+          fi
 
   build:
     name: Build debug APK
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
