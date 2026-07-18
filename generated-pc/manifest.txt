@@ -1,3 +1,3 @@
-run_id=29634184222
-commit=8719644c68b29c755c9bc487ae5a5c8748f9866d
-artifact=Shenqing-PC-Quiz-Assistant-EXE
+run_id=29634196629
+commit=43083dee50ea4b30b42993e42cbec36a2cd3ce08
+artifact=Shenqing-PC-Quiz-Assistant-1.1-Fast-EXE
