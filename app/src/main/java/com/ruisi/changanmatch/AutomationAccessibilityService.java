@@ -38,9 +38,25 @@ public class AutomationAccessibilityService extends AccessibilityService {
         return true;
     }
 
+    public static boolean performTap(float x, float y) {
+        AutomationAccessibilityService service = instance;
+        if (service == null) return false;
+        service.mainHandler.post(() -> {
+            Path path = new Path();
+            path.moveTo(x, y);
+            GestureDescription.StrokeDescription stroke =
+                    new GestureDescription.StrokeDescription(path, 0, 90);
+            GestureDescription gesture = new GestureDescription.Builder()
+                    .addStroke(stroke)
+                    .build();
+            service.dispatchGesture(gesture, null, null);
+        });
+        return true;
+    }
+
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        // No window content is read. This service only dispatches a gesture requested by the local solver.
+        // 不读取窗口内容，只执行本地识别模块请求的滑动或点击手势。
     }
 
     @Override
