@@ -23,8 +23,18 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".QuizActivity"
+            android:exported="false"
+            android:screenOrientation="sensorPortrait" />
+
         <service
             android:name=".ScreenCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
+        <service
+            android:name=".QuizScreenCaptureService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
 

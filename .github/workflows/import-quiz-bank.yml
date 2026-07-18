@@ -1,0 +1,44 @@
+name: Import Embedded Quiz Bank
+
+on:
+  push:
+    branches: [ "feature/embed-quiz-bank" ]
+    paths:
+      - ".github/workflows/import-quiz-bank.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Download source quiz APK and extract 3603-question bank
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://sdmntprjapaneast.oaiusercontent.com/files/00000000-4ce4-8209-97cc-2c793ca91a8e/raw?se=2026-07-18T03:33:25Z&sp=r&sv=2026-02-06&sr=b&scid=a010c596-1316-58a1-96d2-584454e364a8&skoid=03727f49-62d3-42ac-8350-1c0e6559d238&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-18T02:43:59Z&ske=2026-07-20T02:43:59Z&sks=b&skv=2026-02-06&sig=SKuO%2ByDLNkmjvfEF0hi60eGqgycPf3jMeTZFocyuDPU%3D'
+          curl --fail --location --retry 3 "$URL" -o /tmp/quiz-artifact.zip
+          mkdir -p /tmp/quiz-artifact /tmp/quiz-apk app/src/main/assets
+          unzip -q /tmp/quiz-artifact.zip -d /tmp/quiz-artifact
+          APK=$(find /tmp/quiz-artifact -name '*.apk' | head -n 1)
+          test -n "$APK"
+          unzip -q "$APK" assets/questions.jsonl -d /tmp/quiz-apk
+          test -f /tmp/quiz-apk/assets/questions.jsonl
+          test "$(wc -l < /tmp/quiz-apk/assets/questions.jsonl)" -ge 3600
+          cp /tmp/quiz-apk/assets/questions.jsonl app/src/main/assets/questions.jsonl
+          printf 'questions=%s\nbytes=%s\n' \
+            "$(wc -l < app/src/main/assets/questions.jsonl)" \
+            "$(stat -c%s app/src/main/assets/questions.jsonl)" \
+            > app/src/main/assets/questions.info
+      - name: Commit embedded question bank
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/assets/questions.jsonl app/src/main/assets/questions.info
+          git commit -m "Embed 3603-question local bank"
+          git push origin HEAD:${GITHUB_REF_NAME}
