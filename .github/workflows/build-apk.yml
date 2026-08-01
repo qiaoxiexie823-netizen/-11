@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build:
-    name: Build 深情助手 1.7.0 手机版快消版
+    name: Build 深情助手 1.8.0 答题错题学习版
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
@@ -28,13 +28,13 @@ jobs:
         shell: bash
         run: |
           mkdir -p generated-apk
-          printf 'run_id=%s\ncommit=%s\nartifact=ShenqingAssistant-1.7.0-MobileQuickClear-APK\n' \
+          printf 'run_id=%s\ncommit=%s\nartifact=ShenqingAssistant-1.8.0-QuizLearning-APK\n' \
             "$GITHUB_RUN_ID" "$GITHUB_SHA" > generated-apk/manifest.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add generated-apk/manifest.txt
           if ! git diff --cached --quiet; then
-            git commit -m "Record 深情助手 1.7.0 build run"
+            git commit -m "Record 深情助手 1.8.0 build run"
             git pull --rebase origin ${GITHUB_REF_NAME}
             git push origin HEAD:${GITHUB_REF_NAME}
           fi
@@ -59,28 +59,36 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Apply quiz and mobile quick-clear patches
+      - name: Apply quiz reliability and wrong-answer learning patches
         shell: bash
         run: |
-          gradle --no-daemon --stacktrace :app:patchEmbeddedQuizEntry :app:patchQuizPerformance
+          gradle --no-daemon --stacktrace :app:patchQuizPerformance
           python3 tools/patch_full_auto_quiz_164.py
-          python3 tools/patch_mobile_match3_quickclear_170.py
-          grep -q 'QUIZ_LAYOUT_V164' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
-          grep -q '一键应用视频快消预设' app/src/main/java/com/ruisi/changanmatch/MainActivity.java
-          grep -q 'speedLabel = "快消"' app/src/main/java/com/ruisi/changanmatch/ScreenCaptureService.java
+          python3 tools/patch_quiz_only_learning_180.py
+          grep -q 'MANUAL_WRONG_LEARNING_V180' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
+          grep -q '查看错题学习记录' app/src/main/java/com/ruisi/changanmatch/QuizActivity.java
+          grep -q 'addTabButton(tabs, "答题器"' app/src/main/java/com/ruisi/changanmatch/MainActivity.java
+          if grep -q 'addTabButton(tabs, "消消乐"' app/src/main/java/com/ruisi/changanmatch/MainActivity.java; then
+            echo '消消乐入口仍然存在' >&2
+            exit 1
+          fi
+          if grep -q 'android:name=".ScreenCaptureService"' app/src/main/AndroidManifest.xml; then
+            echo '消消乐服务仍然注册' >&2
+            exit 1
+          fi
 
       - name: Build APK and capture diagnostics
         shell: bash
         run: |
           set +e
-          gradle --no-daemon --stacktrace clean assembleDebug > generated-apk/build-1.7.0.log 2>&1
+          gradle --no-daemon --stacktrace clean assembleDebug > generated-apk/build-1.8.0.log 2>&1
           CODE=$?
-          tail -n 320 generated-apk/build-1.7.0.log > generated-apk/build-1.7.0-tail.log
+          tail -n 360 generated-apk/build-1.8.0.log > generated-apk/build-1.8.0-tail.log
           if [ "$CODE" -ne 0 ]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add generated-apk/build-1.7.0-tail.log
-            git commit -m "Save 深情助手 1.7.0 build error" || true
+            git add generated-apk/build-1.8.0-tail.log
+            git commit -m "Save 深情助手 1.8.0 build error" || true
             git pull --rebase origin ${GITHUB_REF_NAME}
             git push origin HEAD:${GITHUB_REF_NAME}
             exit "$CODE"
@@ -90,15 +98,15 @@ jobs:
         shell: bash
         run: |
           test -f app/build/outputs/apk/debug/app-debug.apk
-          cp app/build/outputs/apk/debug/app-debug.apk ShenqingAssistant-1.7.0-MobileQuickClear.apk
-          sha256sum ShenqingAssistant-1.7.0-MobileQuickClear.apk > ShenqingAssistant-1.7.0-MobileQuickClear.apk.sha256
+          cp app/build/outputs/apk/debug/app-debug.apk ShenqingAssistant-1.8.0-QuizLearning.apk
+          sha256sum ShenqingAssistant-1.8.0-QuizLearning.apk > ShenqingAssistant-1.8.0-QuizLearning.apk.sha256
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ShenqingAssistant-1.7.0-MobileQuickClear-APK
+          name: ShenqingAssistant-1.8.0-QuizLearning-APK
           path: |
-            ShenqingAssistant-1.7.0-MobileQuickClear.apk
-            ShenqingAssistant-1.7.0-MobileQuickClear.apk.sha256
+            ShenqingAssistant-1.8.0-QuizLearning.apk
+            ShenqingAssistant-1.8.0-QuizLearning.apk.sha256
           if-no-files-found: error
           retention-days: 30
