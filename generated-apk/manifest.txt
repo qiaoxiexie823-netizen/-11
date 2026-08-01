@@ -1,3 +1,3 @@
-run_id=29739349001
-commit=a55ff0654df794baaeca528dbfb3dae1671871f7
+run_id=30679839967
+commit=c705e31f59721bce66411c152116566ea223e555
 artifact=ShenqingAssistant-1.7.0-MobileQuickClear-APK
