@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build:
-    name: Build 深情助手 1.8.1 科举识别修复版
+    name: Build 深情助手 1.8.2 区域快速识别版
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
@@ -28,13 +28,13 @@ jobs:
         shell: bash
         run: |
           mkdir -p generated-apk
-          printf 'run_id=%s\ncommit=%s\nartifact=ShenqingAssistant-1.8.1-QuizScopeClickFix-APK\n' \
+          printf 'run_id=%s\ncommit=%s\nartifact=ShenqingAssistant-1.8.2-AdjustableROI-FastQuiz-APK\n' \
             "$GITHUB_RUN_ID" "$GITHUB_SHA" > generated-apk/manifest.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add generated-apk/manifest.txt
           if ! git diff --cached --quiet; then
-            git commit -m "Record 深情助手 1.8.1 build run"
+            git commit -m "Record 深情助手 1.8.2 build run"
             git pull --rebase origin ${GITHUB_REF_NAME}
             git push origin HEAD:${GITHUB_REF_NAME}
           fi
@@ -59,7 +59,7 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Apply quiz-only scope and portrait click patches
+      - name: Apply quiz learning, page scope and adjustable ROI patches
         shell: bash
         run: |
           gradle --no-daemon --stacktrace :app:patchQuizPerformance
@@ -77,6 +77,7 @@ jobs:
           path.write_text(text, encoding='utf-8')
           PY
           python3 tools/patch_quiz_scope_click_181.py
+          python3 tools/patch_quiz_roi_fast_182.py
           python3 - <<'PY'
           from pathlib import Path
           path = Path('app/src/main/java/com/ruisi/changanmatch/MainActivity.java')
@@ -90,10 +91,13 @@ jobs:
               )
               path.write_text(text, encoding='utf-8')
           PY
-          grep -q 'QUIZ_SCOPE_CLICK_V181' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
-          grep -q 'isQuizQuestionPage' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
-          grep -q 'findAnswerOptionIndex' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
-          grep -q '不点击开始答题、下一题或下一关' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
+          grep -q 'QUIZ_ROI_FAST_V182' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
+          grep -q 'OCR_INTERVAL_MS = 280L' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
+          grep -q 'loadRecognitionRegion' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
+          grep -q 'updateQuizSession' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
+          grep -q '调整题目识别区域' app/src/main/java/com/ruisi/changanmatch/QuizActivity.java
+          grep -q 'class QuizRegionOverlayService' app/src/main/java/com/ruisi/changanmatch/QuizRegionOverlayService.java
+          grep -q 'android:name=".QuizRegionOverlayService"' app/src/main/AndroidManifest.xml
           grep -q '查看错题学习记录' app/src/main/java/com/ruisi/changanmatch/QuizActivity.java
           grep -q 'addTabButton(tabs, "答题器"' app/src/main/java/com/ruisi/changanmatch/MainActivity.java
           if grep -q '当前版本只保留答题器和卡密' app/src/main/java/com/ruisi/changanmatch/MainActivity.java; then
@@ -113,14 +117,14 @@ jobs:
         shell: bash
         run: |
           set +e
-          gradle --no-daemon --stacktrace clean assembleDebug > generated-apk/build-1.8.1.log 2>&1
+          gradle --no-daemon --stacktrace clean assembleDebug > generated-apk/build-1.8.2.log 2>&1
           CODE=$?
-          tail -n 360 generated-apk/build-1.8.1.log > generated-apk/build-1.8.1-tail.log
+          tail -n 420 generated-apk/build-1.8.2.log > generated-apk/build-1.8.2-tail.log
           if [ "$CODE" -ne 0 ]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add generated-apk/build-1.8.1-tail.log
-            git commit -m "Save 深情助手 1.8.1 build error" || true
+            git add generated-apk/build-1.8.2-tail.log
+            git commit -m "Save 深情助手 1.8.2 build error" || true
             git pull --rebase origin ${GITHUB_REF_NAME}
             git push origin HEAD:${GITHUB_REF_NAME}
             exit "$CODE"
@@ -130,15 +134,15 @@ jobs:
         shell: bash
         run: |
           test -f app/build/outputs/apk/debug/app-debug.apk
-          cp app/build/outputs/apk/debug/app-debug.apk ShenqingAssistant-1.8.1-QuizScopeClickFix.apk
-          sha256sum ShenqingAssistant-1.8.1-QuizScopeClickFix.apk > ShenqingAssistant-1.8.1-QuizScopeClickFix.apk.sha256
+          cp app/build/outputs/apk/debug/app-debug.apk ShenqingAssistant-1.8.2-AdjustableROI-FastQuiz.apk
+          sha256sum ShenqingAssistant-1.8.2-AdjustableROI-FastQuiz.apk > ShenqingAssistant-1.8.2-AdjustableROI-FastQuiz.apk.sha256
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ShenqingAssistant-1.8.1-QuizScopeClickFix-APK
+          name: ShenqingAssistant-1.8.2-AdjustableROI-FastQuiz-APK
           path: |
-            ShenqingAssistant-1.8.1-QuizScopeClickFix.apk
-            ShenqingAssistant-1.8.1-QuizScopeClickFix.apk.sha256
+            ShenqingAssistant-1.8.2-AdjustableROI-FastQuiz.apk
+            ShenqingAssistant-1.8.2-AdjustableROI-FastQuiz.apk.sha256
           if-no-files-found: error
           retention-days: 30
