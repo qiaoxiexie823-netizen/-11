@@ -1,3 +1,3 @@
-run_id=30679913126
-commit=c882cc888f48a417e78ff2a6ef7c7e556307ad31
+run_id=30680012013
+commit=41cd77dada003612d3ae0759e9e34450efef4423
 artifact=ShenqingAssistant-1.8.0-QuizLearning-APK
