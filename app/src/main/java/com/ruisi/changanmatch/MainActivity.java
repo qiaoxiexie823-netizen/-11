@@ -11,22 +11,16 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
-import android.media.projection.MediaProjectionManager;
-import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.CountDownTimer;
 import android.provider.Settings;
 import android.text.InputType;
 import android.view.Gravity;
-import android.widget.ArrayAdapter;
 import android.widget.Button;
-import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
-import android.widget.NumberPicker;
 import android.widget.ScrollView;
-import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -37,12 +31,9 @@ import java.util.Date;
 import java.util.Locale;
 
 public class MainActivity extends Activity {
-    private static final int REQ_CAPTURE = 1001;
     private static final int REQ_NOTIFICATION = 1002;
-
-    private static final int TAB_MATCH = 0;
-    private static final int TAB_QUIZ = 1;
-    private static final int TAB_LICENSE = 2;
+    private static final int TAB_QUIZ = 0;
+    private static final int TAB_LICENSE = 1;
 
     private static final String PREF_ACTIVE_KEY = "offline_active_license_key";
     private static final String PREF_LICENSE_EXPIRES_AT = "offline_license_expires_at";
@@ -55,42 +46,32 @@ public class MainActivity extends Activity {
     private static final int TEXT_DARK = Color.rgb(55, 54, 64);
     private static final int TEXT_MUTED = Color.rgb(112, 108, 124);
     private static final int GREEN = Color.rgb(24, 125, 76);
+    private static final int RED = Color.rgb(190, 45, 45);
 
-    private MediaProjectionManager projectionManager;
     private SharedPreferences preferences;
-    private TextView permissionState;
     private TextView countdownView;
-    private Button startButton;
-    private NumberPicker rowsPicker;
-    private NumberPicker columnsPicker;
-    private NumberPicker kindsPicker;
-    private Spinner speedSpinner;
-    private CheckBox autoMode;
     private CountDownTimer licenseTimer;
-    private boolean mainUiReady;
     private int currentTab = TAB_LICENSE;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        projectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         preferences = getSharedPreferences("match3_settings", MODE_PRIVATE);
         showDisclaimer();
     }
 
     private void showDisclaimer() {
         String message =
-                "本软件为非官方辅助工具，仅供学习、交流和个人测试使用。\n\n" +
-                "自动识别、悬浮窗及无障碍自动滑动等功能，可能不符合游戏运营方的用户协议或风控规则，可能导致警告、功能限制、数据异常或账号封禁。使用前请自行阅读并遵守相关协议，建议不要在重要账号上使用。\n\n" +
-                "因使用或无法使用本软件产生的账号封禁、虚拟物品或数据损失、设备异常、经济损失以及其他直接或间接后果，由使用者自行承担。开发者不提供账号安全保证，并在法律允许范围内不承担相关责任。\n\n" +
-                "本软件不包含修改游戏数据、绕过检测或破解功能。继续使用即表示你已理解上述风险并自愿承担。";
+                "本软件为非官方答题辅助工具，仅供学习、交流和个人测试使用。\n\n" +
+                "屏幕识别、悬浮窗及无障碍自动点击功能，可能不符合游戏运营方的用户协议或风控规则，可能导致警告、功能限制或账号封禁。使用前请自行阅读并遵守相关协议。\n\n" +
+                "本软件不修改游戏数据、不注入游戏进程、不处理游戏封包，也不包含绕过检测或破解功能。继续使用即表示你已理解风险并自愿承担。";
 
         new AlertDialog.Builder(this)
                 .setTitle("使用免责声明")
                 .setMessage(message)
                 .setCancelable(false)
                 .setPositiveButton("我已阅读并同意", (dialog, which) -> {
-                    int firstTab = isOfflineLicenseValid() ? TAB_MATCH : TAB_LICENSE;
+                    int firstTab = isOfflineLicenseValid() ? TAB_QUIZ : TAB_LICENSE;
                     buildShell(firstTab);
                     if (isOfflineLicenseValid()) requestNotificationPermissionIfNeeded();
                 })
@@ -101,9 +82,6 @@ public class MainActivity extends Activity {
     private void buildShell(int selectedTab) {
         stopLicenseTimer();
         currentTab = selectedTab;
-        mainUiReady = selectedTab == TAB_MATCH && isOfflineLicenseValid();
-        permissionState = null;
-        startButton = null;
 
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
@@ -121,8 +99,6 @@ public class MainActivity extends Activity {
         tabs.setPadding(dp(3), dp(3), dp(3), dp(3));
         tabs.setBackground(roundRect(Color.rgb(235, 231, 246), 16));
         page.addView(tabs, fullWidth());
-
-        addTabButton(tabs, "消消乐", TAB_MATCH, selectedTab == TAB_MATCH);
         addTabButton(tabs, "答题器", TAB_QUIZ, selectedTab == TAB_QUIZ);
         addTabButton(tabs, "卡密", TAB_LICENSE, selectedTab == TAB_LICENSE);
 
@@ -145,13 +121,8 @@ public class MainActivity extends Activity {
         page.addView(scroll, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        if (selectedTab == TAB_MATCH) {
-            renderMatchTab(content);
-        } else if (selectedTab == TAB_QUIZ) {
-            renderQuizTab(content);
-        } else {
-            renderLicenseTab(content);
-        }
+        if (selectedTab == TAB_QUIZ) renderQuizTab(content);
+        else renderLicenseTab(content);
 
         TextView maker = text("深情制作", 14, PURPLE);
         maker.setGravity(Gravity.CENTER);
@@ -171,12 +142,8 @@ public class MainActivity extends Activity {
         button.setPadding(0, 0, 0, 0);
         button.setMinHeight(0);
         button.setMinimumHeight(0);
-        button.setBackground(selected
-                ? roundRect(PURPLE, 13)
-                : roundRect(Color.TRANSPARENT, 13));
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            button.setStateListAnimator(null);
-        }
+        button.setBackground(selected ? roundRect(PURPLE, 13) : roundRect(Color.TRANSPARENT, 13));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) button.setStateListAnimator(null);
         button.setOnClickListener(v -> switchTab(tab));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(43), 1f);
         params.setMargins(dp(2), 0, dp(2), 0);
@@ -184,12 +151,47 @@ public class MainActivity extends Activity {
     }
 
     private void switchTab(int tab) {
-        if (tab != TAB_LICENSE && !isOfflineLicenseValid()) {
+        if (tab == TAB_QUIZ && !isOfflineLicenseValid()) {
             Toast.makeText(this, "请先在卡密栏完成激活", Toast.LENGTH_SHORT).show();
             buildShell(TAB_LICENSE);
             return;
         }
         buildShell(tab);
+    }
+
+    private void renderQuizTab(LinearLayout root) {
+        LinearLayout card = verticalCard(Color.WHITE, 20);
+        card.setPadding(dp(18), dp(18), dp(18), dp(18));
+        root.addView(card, cardParams());
+
+        TextView title = text("长安题库答题器", 22, PURPLE_DARK);
+        title.setGravity(Gravity.CENTER);
+        card.addView(title, fullWidth());
+
+        TextView description = text(
+                "内置3603道本地题库，支持悬浮显示答案和自动点击。手动点击模式下，答错后会识别正确选项并保存到本地学习题库。",
+                14, TEXT_MUTED);
+        description.setGravity(Gravity.CENTER);
+        description.setLineSpacing(0, 1.2f);
+        description.setPadding(0, dp(10), 0, dp(15));
+        card.addView(description, fullWidth());
+
+        Button openButton = primaryButton("进入答题器");
+        openButton.setOnClickListener(v -> startActivity(new Intent(this, QuizActivity.class)));
+        card.addView(openButton, buttonParams());
+
+        LearnedQuestionStore learned = new LearnedQuestionStore(this);
+        TextView learnedState = text("本地错题学习记录：" + learned.size() + " 道", 14, GREEN);
+        learnedState.setGravity(Gravity.CENTER);
+        learnedState.setPadding(dp(8), dp(12), dp(8), dp(4));
+        card.addView(learnedState, fullWidth());
+
+        TextView note = text(
+                "当前版本只保留答题器和卡密，已取消消消乐入口。错题记录仅保存在本机，不上传服务器。",
+                13, TEXT_MUTED);
+        note.setGravity(Gravity.CENTER);
+        note.setPadding(dp(5), dp(10), dp(5), 0);
+        card.addView(note, fullWidth());
     }
 
     private void renderLicenseTab(LinearLayout root) {
@@ -198,13 +200,12 @@ public class MainActivity extends Activity {
         root.addView(card, cardParams());
 
         OfflineLicense.Result active = readActiveLicense();
-        TextView cardTitle = text(active.valid ? "卡密信息" : "离线卡密激活",
-                21, PURPLE_DARK);
+        TextView cardTitle = text(active.valid ? "卡密信息" : "离线卡密激活", 21, PURPLE_DARK);
         cardTitle.setGravity(Gravity.CENTER);
         card.addView(cardTitle, fullWidth());
 
         TextView description = text(
-                "卡密只在本机验证，不连接服务器。复制本机号交给卡密生成器，再输入生成的卡密完成激活。",
+                "卡密只在本机验证，不连接服务器。复制本机号到原来的卡密生成器，再输入生成的卡密完成激活。",
                 14, TEXT_MUTED);
         description.setGravity(Gravity.CENTER);
         description.setLineSpacing(0, 1.18f);
@@ -231,19 +232,17 @@ public class MainActivity extends Activity {
         deviceBox.addView(copyButton, compactButtonParams());
 
         if (active.valid) {
-            String expiryText = active.permanent
-                    ? "永久有效"
-                    : new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA)
-                    .format(new Date(active.expiresAtMillis));
-            TextView activeState = text(
-                    "已激活：" + active.typeLabel + "\n有效期：" + expiryText,
+            String expiryText = active.permanent ? "永久有效" :
+                    new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA)
+                            .format(new Date(active.expiresAtMillis));
+            TextView activeState = text("已激活：" + active.typeLabel + "\n有效期：" + expiryText,
                     14, GREEN);
             activeState.setGravity(Gravity.CENTER);
             activeState.setPadding(0, dp(14), 0, dp(7));
             card.addView(activeState, fullWidth());
 
-            Button enterButton = primaryButton("进入消消乐");
-            enterButton.setOnClickListener(v -> switchTab(TAB_MATCH));
+            Button enterButton = primaryButton("进入答题器");
+            enterButton.setOnClickListener(v -> switchTab(TAB_QUIZ));
             card.addView(enterButton, buttonParams());
             return;
         }
@@ -252,11 +251,9 @@ public class MainActivity extends Activity {
         licenseInput.setSingleLine(true);
         licenseInput.setTextSize(15);
         licenseInput.setHint("请粘贴生成的离线卡密");
-        licenseInput.setInputType(InputType.TYPE_CLASS_TEXT |
-                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        licenseInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         licenseInput.setPadding(dp(16), 0, dp(16), 0);
-        licenseInput.setBackground(roundStroke(Color.rgb(252, 251, 255),
-                Color.rgb(188, 177, 220), 14));
+        licenseInput.setBackground(roundStroke(Color.rgb(252, 251, 255), Color.rgb(188, 177, 220), 14));
         card.addView(licenseInput, licenseInputParams());
 
         TextView status = text("无需联网即可验证", 13, TEXT_MUTED);
@@ -269,204 +266,45 @@ public class MainActivity extends Activity {
         card.addView(verifyButton, buttonParams());
     }
 
-    private void renderMatchTab(LinearLayout root) {
-        LinearLayout introCard = verticalCard(Color.WHITE, 18);
-        introCard.setPadding(dp(16), dp(15), dp(16), dp(15));
-        root.addView(introCard, compactCardParams());
-
-        TextView introTitle = text("宴会消消乐", 19, PURPLE_DARK);
-        introCard.addView(introTitle, fullWidth());
-        TextView intro = text(
-                "授权悬浮窗 → 开启自动滑动权限 → 确认棋盘参数 → 开始识别 → 回到游戏点击浮窗“标定”。",
-                14, TEXT_MUTED);
-        intro.setLineSpacing(0, 1.2f);
-        intro.setPadding(0, dp(7), 0, 0);
-        introCard.addView(intro, fullWidth());
-
-        LinearLayout permissionCard = verticalCard(Color.WHITE, 18);
-        permissionCard.setPadding(dp(16), dp(15), dp(16), dp(15));
-        root.addView(permissionCard, compactCardParams());
-        permissionCard.addView(text("权限设置", 18, PURPLE_DARK), fullWidth());
-
-        permissionState = text("", 14, TEXT_MUTED);
-        permissionState.setPadding(0, dp(8), 0, dp(8));
-        permissionCard.addView(permissionState, fullWidth());
-
-        Button overlayButton = primaryButton("① 授权悬浮窗");
-        overlayButton.setOnClickListener(v -> openOverlaySettings());
-        permissionCard.addView(overlayButton, buttonParams());
-
-        Button accessibilityButton = secondaryButton("② 开启自动滑动权限");
-        accessibilityButton.setOnClickListener(v ->
-                startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
-        permissionCard.addView(accessibilityButton, buttonParams());
-
-        LinearLayout settingsCard = verticalCard(Color.WHITE, 18);
-        settingsCard.setPadding(dp(16), dp(15), dp(16), dp(15));
-        root.addView(settingsCard, compactCardParams());
-        settingsCard.addView(text("棋盘与速度", 18, PURPLE_DARK), fullWidth());
-
-        LinearLayout pickers = new LinearLayout(this);
-        pickers.setOrientation(LinearLayout.HORIZONTAL);
-        pickers.setGravity(Gravity.CENTER);
-        pickers.setPadding(0, dp(7), 0, dp(2));
-        rowsPicker = addPicker(pickers, "行数", 4, 10, preferences.getInt("rows", 8));
-        columnsPicker = addPicker(pickers, "列数", 4, 10,
-                preferences.getInt("columns", 7));
-        kindsPicker = addPicker(pickers, "图标种类", 4, 9,
-                preferences.getInt("kinds", 5));
-        settingsCard.addView(pickers, fullWidth());
-
-        LinearLayout speedRow = new LinearLayout(this);
-        speedRow.setOrientation(LinearLayout.HORIZONTAL);
-        speedRow.setGravity(Gravity.CENTER_VERTICAL);
-        speedRow.setPadding(0, dp(5), 0, dp(3));
-        TextView speedLabel = text("滑动速度", 15, TEXT_DARK);
-        speedRow.addView(speedLabel, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 0.30f));
-
-        speedSpinner = new Spinner(this);
-        String[] speedOptions = {
-                "稳定（1.5～2.0秒）",
-                "快速（0.8～1.2秒）",
-                "极速（0.5～0.8秒）"
-        };
-        ArrayAdapter<String> speedAdapter = new ArrayAdapter<>(this,
-                android.R.layout.simple_spinner_item, speedOptions);
-        speedAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        speedSpinner.setAdapter(speedAdapter);
-        speedSpinner.setSelection(Math.max(0, Math.min(2,
-                preferences.getInt("speed_mode", 0))));
-        speedRow.addView(speedSpinner, new LinearLayout.LayoutParams(0, dp(50), 0.70f));
-        settingsCard.addView(speedRow, fullWidth());
-
-        autoMode = new CheckBox(this);
-        autoMode.setText("开启自动滑动（关闭时只显示提示）");
-        autoMode.setTextSize(15);
-        autoMode.setTextColor(TEXT_DARK);
-        autoMode.setChecked(preferences.getBoolean("auto_mode", false));
-        autoMode.setPadding(0, dp(7), 0, dp(4));
-        settingsCard.addView(autoMode, fullWidth());
-
-        LinearLayout actionCard = verticalCard(Color.WHITE, 18);
-        actionCard.setPadding(dp(16), dp(15), dp(16), dp(15));
-        root.addView(actionCard, compactCardParams());
-        actionCard.addView(text("运行控制", 18, PURPLE_DARK), fullWidth());
-
-        startButton = primaryButton("③ 开始识别棋盘");
-        startButton.setOnClickListener(v -> startCaptureRequest());
-        actionCard.addView(startButton, buttonParams());
-
-        Button stopButton = secondaryButton("停止运行");
-        stopButton.setOnClickListener(v -> {
-            Intent stop = new Intent(this, ScreenCaptureService.class);
-            stop.setAction(ScreenCaptureService.ACTION_STOP);
-            startService(stop);
-            Toast.makeText(this, "已发送停止指令", Toast.LENGTH_SHORT).show();
-        });
-        actionCard.addView(stopButton, buttonParams());
-
-        Button resetButton = secondaryButton("重置棋盘标定");
-        resetButton.setOnClickListener(v -> {
-            preferences.edit()
-                    .remove("board_left").remove("board_top")
-                    .remove("board_right").remove("board_bottom").apply();
-            Toast.makeText(this, "已重置，开始后请重新标定", Toast.LENGTH_SHORT).show();
-        });
-        actionCard.addView(resetButton, buttonParams());
-
-        TextView note = text(
-                "默认参数为 8 行×7 列、5 类图标。建议第一次关闭自动模式测试；粉红切片、数字和闪光属于消除动画，助手会等待画面稳定后再计算。",
-                13, TEXT_MUTED);
-        note.setLineSpacing(0, 1.18f);
-        note.setPadding(dp(14), dp(12), dp(14), dp(12));
-        note.setBackground(roundRect(Color.rgb(241, 238, 248), 15));
-        root.addView(note, compactCardParams());
-
-        updatePermissionState();
-    }
-
-    private void renderQuizTab(LinearLayout root) {
-        LinearLayout card = verticalCard(Color.WHITE, 20);
-        card.setPadding(dp(18), dp(18), dp(18), dp(18));
-        root.addView(card, cardParams());
-
-        TextView title = text("长安题库答题器", 21, PURPLE_DARK);
-        title.setGravity(Gravity.CENTER);
-        card.addView(title, fullWidth());
-
-        TextView description = text(
-                "顶部切换入口已经按原方案保留。答题器使用本地题库和屏幕识别，不上传题目内容。",
-                14, TEXT_MUTED);
-        description.setGravity(Gravity.CENTER);
-        description.setLineSpacing(0, 1.2f);
-        description.setPadding(0, dp(10), 0, dp(15));
-        card.addView(description, fullWidth());
-
-        Button openButton = primaryButton("启动题库答题器");
-        openButton.setOnClickListener(v -> openQuizAssistant());
-        card.addView(openButton, buttonParams());
-
-        TextView note = text(
-                "答题时会打开本机题库识别组件；返回本应用后仍可在顶部继续切换消消乐和卡密页面。",
-                13, TEXT_MUTED);
-        note.setGravity(Gravity.CENTER);
-        note.setPadding(dp(5), dp(10), dp(5), 0);
-        card.addView(note, fullWidth());
-    }
-
-    private void openQuizAssistant() {
-        Intent launch = getPackageManager().getLaunchIntentForPackage("com.ruisi.changanquiz");
-        if (launch == null) {
-            Toast.makeText(this, "未检测到题库答题器组件，请先安装题库模块", Toast.LENGTH_LONG).show();
-            return;
-        }
-        startActivity(launch);
-    }
-
     private void activateOfflineLicense(EditText input, TextView status) {
         String key = input.getText().toString().trim();
-        OfflineLicense.Result result = OfflineLicense.verify(
-                key, getMachineId(), System.currentTimeMillis());
+        OfflineLicense.Result result = OfflineLicense.verify(key, getMachineId(), System.currentTimeMillis());
         if (!result.valid) {
             input.setError(result.message);
             status.setText(result.message);
-            status.setTextColor(Color.rgb(190, 45, 45));
+            status.setTextColor(RED);
             return;
         }
-
         preferences.edit()
                 .putString(PREF_ACTIVE_KEY, key)
                 .putLong(PREF_LICENSE_EXPIRES_AT, result.expiresAtMillis)
                 .putBoolean(PREF_LICENSE_PERMANENT, result.permanent)
                 .putString(PREF_LICENSE_TYPE, result.typeLabel)
                 .apply();
-
         Toast.makeText(this, "激活成功", Toast.LENGTH_SHORT).show();
         requestNotificationPermissionIfNeeded();
-        buildShell(TAB_MATCH);
+        buildShell(TAB_QUIZ);
     }
 
     private OfflineLicense.Result readActiveLicense() {
-        String key = preferences.getString(PREF_ACTIVE_KEY, "");
-        return OfflineLicense.verify(key, getMachineId(), System.currentTimeMillis());
+        return OfflineLicense.verify(preferences.getString(PREF_ACTIVE_KEY, ""),
+                getMachineId(), System.currentTimeMillis());
+    }
+
+    private boolean isOfflineLicenseValid() {
+        return readActiveLicense().valid;
     }
 
     private String getMachineId() {
-        String androidId = Settings.Secure.getString(
-                getContentResolver(), Settings.Secure.ANDROID_ID);
-        if (androidId == null || androidId.trim().isEmpty()) {
-            androidId = "unknown-device";
-        }
+        String androidId = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
+        if (androidId == null || androidId.trim().isEmpty()) androidId = "unknown-device";
         String source = androidId + "|" + getPackageName();
         String raw;
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] bytes = digest.digest(source.getBytes(StandardCharsets.UTF_8));
             StringBuilder builder = new StringBuilder();
-            for (byte value : bytes) {
-                builder.append(String.format(Locale.US, "%02X", value & 0xff));
-            }
+            for (byte value : bytes) builder.append(String.format(Locale.US, "%02X", value & 0xff));
             raw = builder.substring(0, 16);
         } catch (Exception ignored) {
             raw = Integer.toHexString(source.hashCode()).toUpperCase(Locale.US);
@@ -490,7 +328,7 @@ public class MainActivity extends Activity {
         OfflineLicense.Result result = readActiveLicense();
         if (!result.valid) {
             countdownView.setText("卡密未激活");
-            countdownView.setTextColor(Color.rgb(190, 45, 45));
+            countdownView.setTextColor(RED);
             countdownView.setBackground(roundRect(Color.rgb(255, 236, 236), 15));
             return;
         }
@@ -507,19 +345,14 @@ public class MainActivity extends Activity {
         stopLicenseTimer();
         long remaining = expiresAtMillis - System.currentTimeMillis();
         if (remaining <= 0L) {
-            showExpiredState();
+            countdownView.setText("卡密已到期");
             return;
         }
-
         licenseTimer = new CountDownTimer(remaining, 1000L) {
-            @Override
-            public void onTick(long millisUntilFinished) {
-                updateCountdownText(millisUntilFinished);
-            }
-
-            @Override
-            public void onFinish() {
-                showExpiredState();
+            @Override public void onTick(long millisUntilFinished) { updateCountdownText(millisUntilFinished); }
+            @Override public void onFinish() {
+                if (countdownView != null) countdownView.setText("卡密已到期");
+                if (currentTab == TAB_QUIZ) buildShell(TAB_LICENSE);
             }
         };
         licenseTimer.start();
@@ -535,26 +368,9 @@ public class MainActivity extends Activity {
         long seconds = totalSeconds % 60L;
         countdownView.setText(String.format(Locale.CHINA,
                 "剩余 %d天 %02d:%02d:%02d", days, hours, minutes, seconds));
-
-        if (remainingMs <= 24L * 60L * 60L * 1000L) {
-            countdownView.setTextColor(Color.rgb(190, 92, 28));
-            countdownView.setBackground(roundRect(Color.rgb(255, 244, 229), 15));
-        } else {
-            countdownView.setTextColor(GREEN);
-            countdownView.setBackground(roundRect(Color.rgb(237, 249, 242), 15));
-        }
-    }
-
-    private void showExpiredState() {
-        if (countdownView != null) {
-            countdownView.setText("卡密已到期");
-            countdownView.setTextColor(Color.rgb(190, 45, 45));
-            countdownView.setBackground(roundRect(Color.rgb(255, 236, 236), 15));
-        }
-        if (startButton != null) {
-            startButton.setEnabled(false);
-            startButton.setText("卡密已到期，无法启动");
-        }
+        countdownView.setTextColor(remainingMs <= 86400000L ? Color.rgb(190, 92, 28) : GREEN);
+        countdownView.setBackground(roundRect(remainingMs <= 86400000L
+                ? Color.rgb(255, 244, 229) : Color.rgb(237, 249, 242), 15));
     }
 
     private void stopLicenseTimer() {
@@ -564,163 +380,16 @@ public class MainActivity extends Activity {
         }
     }
 
-    private boolean isOfflineLicenseValid() {
-        return readActiveLicense().valid;
-    }
-
-    private NumberPicker addPicker(LinearLayout parent, String label,
-                                   int min, int max, int value) {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setGravity(Gravity.CENTER);
-        TextView caption = text(label, 13, TEXT_MUTED);
-        caption.setGravity(Gravity.CENTER);
-        box.addView(caption, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-        NumberPicker picker = new NumberPicker(this);
-        picker.setMinValue(min);
-        picker.setMaxValue(max);
-        picker.setValue(Math.max(min, Math.min(max, value)));
-        box.addView(picker, new LinearLayout.LayoutParams(dp(92), dp(100)));
-        parent.addView(box, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        return picker;
-    }
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-        if (mainUiReady && permissionState != null) {
-            updatePermissionState();
-        }
-    }
-
-    @Override
-    protected void onDestroy() {
-        stopLicenseTimer();
-        super.onDestroy();
-    }
-
-    private void updatePermissionState() {
-        if (permissionState == null) return;
-        boolean overlay = Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
-                Settings.canDrawOverlays(this);
-        boolean accessibility = AutomationAccessibilityService.isReady();
-        permissionState.setText("悬浮窗：" + (overlay ? "已授权" : "未授权") +
-                "    自动滑动：" + (accessibility ? "已开启" : "未开启"));
-        permissionState.setTextColor(overlay && accessibility
-                ? GREEN : Color.rgb(190, 80, 35));
-    }
-
-    private void openOverlaySettings() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
-        try {
-            startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:" + getPackageName())));
-        } catch (Exception ignored) {
-            startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION));
-        }
-    }
-
-    private void startCaptureRequest() {
-        if (!isOfflineLicenseValid()) {
-            Toast.makeText(this, "离线卡密已到期或无效", Toast.LENGTH_LONG).show();
-            showExpiredState();
-            return;
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-            new AlertDialog.Builder(this)
-                    .setTitle("需要悬浮窗权限")
-                    .setMessage("请先允许本应用显示在其他应用上层，才能标定棋盘并显示运行状态。")
-                    .setPositiveButton("去授权", (d, w) -> openOverlaySettings())
-                    .setNegativeButton("取消", null)
-                    .show();
-            return;
-        }
-        if (autoMode.isChecked() && !AutomationAccessibilityService.isReady()) {
-            new AlertDialog.Builder(this)
-                    .setTitle("自动滑动权限未开启")
-                    .setMessage("开启自动模式需要在无障碍设置中启用“宴会消消乐自动滑动”。也可以先关闭自动模式，仅查看提示。")
-                    .setPositiveButton("去开启", (d, w) ->
-                            startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)))
-                    .setNegativeButton("取消", null)
-                    .show();
-            return;
-        }
-        saveSettings();
-        startActivityForResult(projectionManager.createScreenCaptureIntent(), REQ_CAPTURE);
-    }
-
-    private void saveSettings() {
-        preferences.edit()
-                .putInt("rows", rowsPicker.getValue())
-                .putInt("columns", columnsPicker.getValue())
-                .putInt("kinds", kindsPicker.getValue())
-                .putInt("speed_mode", speedSpinner.getSelectedItemPosition())
-                .putBoolean("auto_mode", autoMode.isChecked())
-                .apply();
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != REQ_CAPTURE) return;
-        if (resultCode != RESULT_OK || data == null) {
-            Toast.makeText(this, "未获得屏幕录制权限", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        Intent service = new Intent(this, ScreenCaptureService.class);
-        service.setAction(ScreenCaptureService.ACTION_START);
-        service.putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode);
-        service.putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data);
-        service.putExtra(ScreenCaptureService.EXTRA_ROWS, rowsPicker.getValue());
-        service.putExtra(ScreenCaptureService.EXTRA_COLUMNS, columnsPicker.getValue());
-        service.putExtra(ScreenCaptureService.EXTRA_KINDS, kindsPicker.getValue());
-        service.putExtra(ScreenCaptureService.EXTRA_SPEED_MODE,
-                speedSpinner.getSelectedItemPosition());
-        service.putExtra(ScreenCaptureService.EXTRA_AUTO_MODE, autoMode.isChecked());
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(service);
-        else startService(service);
-        Toast.makeText(this, "已启动，请切回游戏并点击浮窗“标定”", Toast.LENGTH_LONG).show();
-        moveTaskToBack(true);
-    }
-
     private void requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= 33 &&
-                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
-                        PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},
-                    REQ_NOTIFICATION);
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIFICATION);
         }
     }
 
-    private TextView text(String value, int size, int color) {
-        TextView view = new TextView(this);
-        view.setText(value);
-        view.setTextSize(size);
-        view.setTextColor(color);
-        return view;
-    }
-
-    private Button primaryButton(String text) {
-        Button button = new Button(this);
-        button.setText(text);
-        button.setTextSize(16);
-        button.setTextColor(Color.WHITE);
-        button.setAllCaps(false);
-        button.setBackground(roundRect(PURPLE, 14));
-        return button;
-    }
-
-    private Button secondaryButton(String text) {
-        Button button = new Button(this);
-        button.setText(text);
-        button.setTextSize(15);
-        button.setTextColor(PURPLE);
-        button.setAllCaps(false);
-        button.setBackground(roundStroke(Color.WHITE, Color.rgb(174, 159, 212), 14));
-        return button;
+    @Override protected void onDestroy() {
+        stopLicenseTimer();
+        super.onDestroy();
     }
 
     private LinearLayout verticalCard(int color, int radiusDp) {
@@ -731,47 +400,70 @@ public class MainActivity extends Activity {
         return card;
     }
 
+    private TextView text(String value, int size, int color) {
+        TextView view = new TextView(this);
+        view.setText(value);
+        view.setTextSize(size);
+        view.setTextColor(color);
+        return view;
+    }
+
+    private Button primaryButton(String value) {
+        Button button = new Button(this);
+        button.setText(value);
+        button.setTextSize(16);
+        button.setTextColor(Color.WHITE);
+        button.setAllCaps(false);
+        button.setBackground(roundRect(PURPLE, 14));
+        return button;
+    }
+
+    private Button secondaryButton(String value) {
+        Button button = new Button(this);
+        button.setText(value);
+        button.setTextSize(15);
+        button.setTextColor(PURPLE);
+        button.setAllCaps(false);
+        button.setBackground(roundStroke(Color.WHITE, Color.rgb(174, 159, 212), 14));
+        return button;
+    }
+
     private LinearLayout.LayoutParams fullWidth() {
-        return new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+        return new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
     }
 
     private LinearLayout.LayoutParams cardParams() {
-        LinearLayout.LayoutParams p = fullWidth();
-        p.setMargins(0, dp(6), 0, dp(8));
-        return p;
-    }
-
-    private LinearLayout.LayoutParams compactCardParams() {
-        LinearLayout.LayoutParams p = fullWidth();
-        p.setMargins(0, dp(5), 0, dp(5));
-        return p;
+        LinearLayout.LayoutParams params = fullWidth();
+        params.setMargins(0, dp(5), 0, dp(6));
+        return params;
     }
 
     private LinearLayout.LayoutParams buttonParams() {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(52));
-        p.setMargins(0, dp(5), 0, dp(5));
-        return p;
+        params.setMargins(0, dp(5), 0, dp(5));
+        return params;
     }
 
     private LinearLayout.LayoutParams compactButtonParams() {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(46));
-        p.setMargins(0, dp(2), 0, 0);
-        return p;
+        params.setMargins(0, dp(3), 0, dp(3));
+        return params;
     }
 
     private LinearLayout.LayoutParams licenseInputParams() {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(56));
-        p.setMargins(0, dp(13), 0, dp(2));
-        return p;
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(54));
+        params.setMargins(0, dp(14), 0, dp(4));
+        return params;
     }
 
-    private LinearLayout.LayoutParams withMargins(LinearLayout.LayoutParams p, int vertical) {
-        p.setMargins(0, vertical, 0, vertical);
-        return p;
+    private LinearLayout.LayoutParams withMargins(LinearLayout.LayoutParams source, int margin) {
+        source.setMargins(margin, margin, margin, margin);
+        return source;
     }
 
     private GradientDrawable roundRect(int color, int radiusDp) {
