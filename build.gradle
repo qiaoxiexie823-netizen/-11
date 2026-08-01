@@ -6,8 +6,8 @@ project(':app') {
     plugins.withId('com.android.application') {
         android {
             defaultConfig {
-                versionCode 16
-                versionName "1.8.0"
+                versionCode 17
+                versionName "1.8.1"
             }
         }
     }
