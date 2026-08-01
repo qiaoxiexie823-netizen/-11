@@ -65,6 +65,17 @@ jobs:
           gradle --no-daemon --stacktrace :app:patchQuizPerformance
           python3 tools/patch_full_auto_quiz_164.py
           python3 tools/patch_quiz_only_learning_180.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tools/patch_quiz_scope_click_181.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              'page_end = "    private void tryAutoClickAnswer(Text result, QuestionBank.Match match) {"',
+              'page_end = "    private void captureOptionTexts(Text result) {"',
+              1,
+          )
+          path.write_text(text, encoding='utf-8')
+          PY
           python3 tools/patch_quiz_scope_click_181.py
           python3 - <<'PY'
           from pathlib import Path
