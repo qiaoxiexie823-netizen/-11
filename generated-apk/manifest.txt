@@ -1,3 +1,3 @@
-run_id=30870477986
-commit=1ba0e1c16bd74a6c199afa7c99648809ab30b6ec
+run_id=30870573995
+commit=124406359055d012efcfda823e617a22648c609c
 artifact=ShenqingAssistant-1.8.2-AdjustableROI-FastQuiz-APK
