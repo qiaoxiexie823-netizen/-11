@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build:
-    name: Build 深情助手 1.8.2 区域快速识别版
+    name: Build 深情助手 1.8.3 最新题库查看版
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
@@ -28,13 +28,13 @@ jobs:
         shell: bash
         run: |
           mkdir -p generated-apk
-          printf 'run_id=%s\ncommit=%s\nartifact=ShenqingAssistant-1.8.2-AdjustableROI-FastQuiz-APK\n' \
+          printf 'run_id=%s\ncommit=%s\nartifact=ShenqingAssistant-1.8.3-LatestBank-Viewer-APK\n' \
             "$GITHUB_RUN_ID" "$GITHUB_SHA" > generated-apk/manifest.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add generated-apk/manifest.txt
           if ! git diff --cached --quiet; then
-            git commit -m "Record 深情助手 1.8.2 build run"
+            git commit -m "Record 深情助手 1.8.3 build run"
             git pull --rebase origin ${GITHUB_REF_NAME}
             git push origin HEAD:${GITHUB_REF_NAME}
           fi
@@ -59,7 +59,7 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Apply quiz learning, page scope and adjustable ROI patches
+      - name: Apply existing quiz features
         shell: bash
         run: |
           gradle --no-daemon --stacktrace :app:patchQuizPerformance
@@ -91,14 +91,48 @@ jobs:
               )
               path.write_text(text, encoding='utf-8')
           PY
+
+      - name: Merge latest question bank and add viewer
+        shell: bash
+        run: |
+          python3 tools/update_question_bank_183.py
+          python3 tools/patch_question_bank_viewer_183.py
+          cat generated-apk/question-bank-count.txt
+          BANK_COUNT=$(wc -l < app/src/main/assets/questions.jsonl)
+          if [ "$BANK_COUNT" -lt 3000 ]; then
+            echo "合并后的题库数量异常：$BANK_COUNT" >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('app/src/main/assets/questions.jsonl')
+          count = 0
+          for line in path.read_text(encoding='utf-8').splitlines():
+              if not line.strip():
+                  continue
+              item = json.loads(line)
+              assert isinstance(item.get('q'), str) and item['q'].strip()
+              assert isinstance(item.get('a'), list) and item['a']
+              count += 1
+          assert count >= 3000
+          print('Validated merged question bank:', count)
+          PY
+
+      - name: Verify unchanged features and viewer
+        shell: bash
+        run: |
           grep -q 'QUIZ_ROI_FAST_V182' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
           grep -q 'OCR_INTERVAL_MS = 280L' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
           grep -q 'loadRecognitionRegion' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
           grep -q 'updateQuizSession' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
           grep -q '调整题目识别区域' app/src/main/java/com/ruisi/changanmatch/QuizActivity.java
+          grep -q '查看错题学习记录' app/src/main/java/com/ruisi/changanmatch/QuizActivity.java
+          grep -q '点击查看题库' app/src/main/java/com/ruisi/changanmatch/QuizActivity.java
+          grep -q 'class QuestionBankViewerActivity' app/src/main/java/com/ruisi/changanmatch/QuestionBankViewerActivity.java
+          grep -q 'android:name=".QuestionBankViewerActivity"' app/src/main/AndroidManifest.xml
           grep -q 'class QuizRegionOverlayService' app/src/main/java/com/ruisi/changanmatch/QuizRegionOverlayService.java
           grep -q 'android:name=".QuizRegionOverlayService"' app/src/main/AndroidManifest.xml
-          grep -q '查看错题学习记录' app/src/main/java/com/ruisi/changanmatch/QuizActivity.java
           grep -q 'addTabButton(tabs, "答题器"' app/src/main/java/com/ruisi/changanmatch/MainActivity.java
           if grep -q '当前版本只保留答题器和卡密' app/src/main/java/com/ruisi/changanmatch/MainActivity.java; then
             echo '首页修改说明仍然存在' >&2
@@ -117,14 +151,14 @@ jobs:
         shell: bash
         run: |
           set +e
-          gradle --no-daemon --stacktrace clean assembleDebug > generated-apk/build-1.8.2.log 2>&1
+          gradle --no-daemon --stacktrace clean assembleDebug > generated-apk/build-1.8.3.log 2>&1
           CODE=$?
-          tail -n 420 generated-apk/build-1.8.2.log > generated-apk/build-1.8.2-tail.log
+          tail -n 460 generated-apk/build-1.8.3.log > generated-apk/build-1.8.3-tail.log
           if [ "$CODE" -ne 0 ]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add generated-apk/build-1.8.2-tail.log
-            git commit -m "Save 深情助手 1.8.2 build error" || true
+            git add generated-apk/build-1.8.3-tail.log generated-apk/question-bank-count.txt
+            git commit -m "Save 深情助手 1.8.3 build error" || true
             git pull --rebase origin ${GITHUB_REF_NAME}
             git push origin HEAD:${GITHUB_REF_NAME}
             exit "$CODE"
@@ -134,15 +168,16 @@ jobs:
         shell: bash
         run: |
           test -f app/build/outputs/apk/debug/app-debug.apk
-          cp app/build/outputs/apk/debug/app-debug.apk ShenqingAssistant-1.8.2-AdjustableROI-FastQuiz.apk
-          sha256sum ShenqingAssistant-1.8.2-AdjustableROI-FastQuiz.apk > ShenqingAssistant-1.8.2-AdjustableROI-FastQuiz.apk.sha256
+          cp app/build/outputs/apk/debug/app-debug.apk ShenqingAssistant-1.8.3-LatestBank-Viewer.apk
+          sha256sum ShenqingAssistant-1.8.3-LatestBank-Viewer.apk > ShenqingAssistant-1.8.3-LatestBank-Viewer.apk.sha256
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ShenqingAssistant-1.8.2-AdjustableROI-FastQuiz-APK
+          name: ShenqingAssistant-1.8.3-LatestBank-Viewer-APK
           path: |
-            ShenqingAssistant-1.8.2-AdjustableROI-FastQuiz.apk
-            ShenqingAssistant-1.8.2-AdjustableROI-FastQuiz.apk.sha256
+            ShenqingAssistant-1.8.3-LatestBank-Viewer.apk
+            ShenqingAssistant-1.8.3-LatestBank-Viewer.apk.sha256
+            generated-apk/question-bank-count.txt
           if-no-files-found: error
           retention-days: 30
