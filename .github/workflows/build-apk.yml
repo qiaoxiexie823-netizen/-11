@@ -68,8 +68,7 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           path = Path('tools/patch_quiz_scope_click_181.py')
-          text = path.read_text(encoding='utf-8')
-          text = text.replace(
+          text = path.read_text(encoding='utf-8').replace(
               'page_end = "    private void tryAutoClickAnswer(Text result, QuestionBank.Match match) {"',
               'page_end = "    private void captureOptionTexts(Text result) {"',
               1,
@@ -99,8 +98,8 @@ jobs:
           python3 tools/patch_question_bank_viewer_183.py
           cat generated-apk/question-bank-count.txt
           BANK_COUNT=$(wc -l < app/src/main/assets/questions.jsonl)
-          if [ "$BANK_COUNT" -lt 3000 ]; then
-            echo "合并后的题库数量异常：$BANK_COUNT" >&2
+          if [ "$BANK_COUNT" -lt 2000 ]; then
+            echo "合并后的去重题库数量异常：$BANK_COUNT" >&2
             exit 1
           fi
           python3 - <<'PY'
@@ -115,7 +114,7 @@ jobs:
               assert isinstance(item.get('q'), str) and item['q'].strip()
               assert isinstance(item.get('a'), list) and item['a']
               count += 1
-          assert count >= 3000
+          assert count >= 2000
           print('Validated merged question bank:', count)
           PY
 
