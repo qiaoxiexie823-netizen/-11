@@ -11,7 +11,7 @@ import zlib
 ASSET_PATH = Path("app/src/main/assets/questions.jsonl")
 PART_PATTERN = "latest_bank_183_part*.b64"
 EXPECTED_PARTS = 7
-EXPECTED_LATEST_UNIQUE = 1948
+EXPECTED_LATEST_UNIQUE = 1953
 
 
 def normalize(value: str) -> str:
@@ -103,7 +103,7 @@ def main() -> None:
     (diagnostics / "question-bank-count.txt").write_text(
         "\n".join(
             [
-                f"source_records=9691",
+                "source_records=9691",
                 f"latest_unique={len(latest)}",
                 f"original_unique={original_unique}",
                 f"overwritten={overwritten}",
