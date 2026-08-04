@@ -11,7 +11,7 @@ import zlib
 ASSET_PATH = Path("app/src/main/assets/questions.jsonl")
 PART_PATTERN = "latest_bank_183_part*.b64"
 EXPECTED_PARTS = 7
-EXPECTED_LATEST_UNIQUE = 1953
+EXPECTED_LATEST_UNIQUE = 1948
 
 
 def normalize(value: str) -> str:
