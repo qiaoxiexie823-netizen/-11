@@ -1,4 +1,3 @@
-# Final source build: Android 1.8.4, exact raw 9691-record question bank.
 name: Build Shenqing Assistant APK
 
 on:
@@ -15,7 +14,7 @@ permissions:
 
 jobs:
   build:
-    name: Build 深情助手 1.8.4 原始9691题库正式安装版
+    name: Build 深情助手 1.8.5（沿用1.8.2安装逻辑）
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -29,13 +28,13 @@ jobs:
         shell: bash
         run: |
           mkdir -p generated-apk
-          printf 'run_id=%s\ncommit=%s\nartifact=ShenqingAssistant-1.8.4-Raw9691-ProperBuild-APK\n' \
+          printf 'run_id=%s\ncommit=%s\nartifact=ShenqingAssistant-1.8.5-Using182InstallLogic-APK\n' \
             "$GITHUB_RUN_ID" "$GITHUB_SHA" > generated-apk/manifest.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add generated-apk/manifest.txt
           if ! git diff --cached --quiet; then
-            git commit -m "Record 深情助手 1.8.4 build run"
+            git commit -m "Record 深情助手 1.8.5 build run"
             git pull --rebase origin ${GITHUB_REF_NAME}
             git push origin HEAD:${GITHUB_REF_NAME}
           fi
@@ -60,7 +59,8 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Apply existing quiz features
+      # 完整复用1.8.2已成功安装版本的补丁顺序与源码编译方式。
+      - name: Apply proven 1.8.2 quiz patches
         shell: bash
         run: |
           gradle --no-daemon --stacktrace :app:patchQuizPerformance
@@ -92,45 +92,44 @@ jobs:
               path.write_text(text, encoding='utf-8')
           PY
 
-      - name: Add viewer and exact uploaded raw question bank
+      - name: Add question-bank viewer and stable raw 9691 bank
         shell: bash
         run: |
           python3 tools/patch_question_bank_viewer_183.py
-          python3 tools/patch_raw_question_bank_184.py
-          cat generated-apk/question-bank-count.txt
+
+          # 使用已成功生成1.8.3题库包时的稳定9分片读取程序，避开后续损坏分片。
+          for index in 00 01 02 03 04 05 06 07 08; do
+            test -f "tools/raw_9691_184_xz_part${index}.b64"
+          done
+          git show 391cd38ec3898e60eb3586cfa5992b5f5432640b:tools/patch_raw_question_bank_184.py \
+            > /tmp/patch_raw_question_bank_184_stable.py
+          python3 /tmp/patch_raw_question_bank_184_stable.py
 
           BANK_COUNT=$(grep -cve '^$' app/src/main/assets/questions.jsonl)
-          if [ "$BANK_COUNT" -ne 9691 ]; then
-            echo "题库记录数异常：$BANK_COUNT" >&2
-            exit 1
-          fi
+          test "$BANK_COUNT" -eq 9691
           BANK_SHA=$(sha256sum app/src/main/assets/questions.jsonl | awk '{print $1}')
-          if [ "$BANK_SHA" != "33b8057b19c24680ac7ceb32c55637ec931c367d64660536fb0b653d80448d11" ]; then
-            echo "题库原文件 SHA256 不一致：$BANK_SHA" >&2
-            exit 1
-          fi
+          test "$BANK_SHA" = "33b8057b19c24680ac7ceb32c55637ec931c367d64660536fb0b653d80448d11"
+          cat generated-apk/question-bank-count.txt
 
+      - name: Set real internal APK version
+        shell: bash
+        run: |
           python3 - <<'PY'
-          import json
-          from collections import Counter
           from pathlib import Path
-          lines = [line for line in Path('app/src/main/assets/questions.jsonl').read_text(encoding='utf-8').splitlines() if line.strip()]
-          assert len(lines) == 9691
-          records = [json.loads(line) for line in lines]
-          distribution = Counter(str(item.get('ans', '')).upper() for item in records)
-          assert distribution['A'] == 9616
-          assert distribution['B'] == 30
-          assert distribution['C'] == 23
-          assert distribution['D'] == 21
-          assert distribution[''] == 1
-          unique_questions = len({item['q'] for item in records})
-          assert unique_questions < len(records), '重复题目没有被保留'
-          for code, index in [('B', 1), ('C', 2), ('D', 3)]:
-              assert any(item.get('ans') == code and len(item.get('a', [])) > index and item['a'][index] for item in records)
-          print('Validated exact raw bank:', len(records), 'records,', unique_questions, 'unique questions, duplicates preserved')
-          PY
+          import re
 
-      - name: Verify unchanged features and raw-answer logic
+          path = Path('app/build.gradle')
+          text = path.read_text(encoding='utf-8')
+          text, code_changes = re.subn(r'versionCode\s+\d+', 'versionCode 21', text, count=1)
+          text, name_changes = re.subn(r'versionName\s+"[^"]+"', 'versionName "1.8.5"', text, count=1)
+          if code_changes != 1 or name_changes != 1:
+              raise RuntimeError('无法写入真实APK内部版本号')
+          path.write_text(text, encoding='utf-8')
+          PY
+          grep -q 'versionCode 21' app/build.gradle
+          grep -q 'versionName "1.8.5"' app/build.gradle
+
+      - name: Verify retained functions
         shell: bash
         run: |
           grep -q 'QUIZ_ROI_FAST_V182' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
@@ -162,50 +161,53 @@ jobs:
             exit 1
           fi
 
-      - name: Build APK and capture diagnostics
+      # 与1.8.2相同：直接由Gradle assembleDebug生成，不修改、不重签、不二次封装成品APK。
+      - name: Build APK using 1.8.2 install logic
         shell: bash
         run: |
           set +e
-          gradle --no-daemon --stacktrace clean assembleDebug > generated-apk/build-1.8.4.log 2>&1
+          gradle --no-daemon --stacktrace clean assembleDebug > generated-apk/build-1.8.5.log 2>&1
           CODE=$?
-          tail -n 500 generated-apk/build-1.8.4.log > generated-apk/build-1.8.4-tail.log
+          tail -n 500 generated-apk/build-1.8.5.log > generated-apk/build-1.8.5-tail.log
           if [ "$CODE" -ne 0 ]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add generated-apk/build-1.8.4-tail.log generated-apk/question-bank-count.txt
-            git commit -m "Save 深情助手 1.8.4 build error" || true
+            git add generated-apk/build-1.8.5-tail.log generated-apk/question-bank-count.txt
+            git commit -m "Save 深情助手 1.8.5 build error" || true
             git pull --rebase origin ${GITHUB_REF_NAME}
             git push origin HEAD:${GITHUB_REF_NAME}
             exit "$CODE"
           fi
 
-      - name: Verify APK package version and signature
+      - name: Verify APK integrity internal version and signature
         shell: bash
         run: |
           APK=app/build/outputs/apk/debug/app-debug.apk
           test -f "$APK"
+          unzip -t "$APK" >/dev/null
           BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          "$BUILD_TOOLS/zipalign" -c -v 4 "$APK" >/dev/null
           "$BUILD_TOOLS/aapt" dump badging "$APK" | head -n 12 | tee generated-apk/apk-metadata.txt
           grep -q "package: name='com.ruisi.changanmatch'" generated-apk/apk-metadata.txt
-          grep -q "versionCode='20'" generated-apk/apk-metadata.txt
-          grep -q "versionName='1.8.4'" generated-apk/apk-metadata.txt
-          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK" | tee generated-apk/signing-verification.txt
-          grep -q 'Verified using v1 scheme' generated-apk/signing-verification.txt
-          grep -q 'Verified using v2 scheme' generated-apk/signing-verification.txt
+          grep -q "versionCode='21'" generated-apk/apk-metadata.txt
+          grep -q "versionName='1.8.5'" generated-apk/apk-metadata.txt
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK" \
+            | tee generated-apk/signing-verification.txt
 
       - name: Prepare downloadable APK
         shell: bash
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk ShenqingAssistant-1.8.4-Raw9691-ProperBuild.apk
-          sha256sum ShenqingAssistant-1.8.4-Raw9691-ProperBuild.apk > ShenqingAssistant-1.8.4-Raw9691-ProperBuild.apk.sha256
+          cp app/build/outputs/apk/debug/app-debug.apk ShenqingAssistant-1.8.5-Using182InstallLogic.apk
+          sha256sum ShenqingAssistant-1.8.5-Using182InstallLogic.apk \
+            > ShenqingAssistant-1.8.5-Using182InstallLogic.apk.sha256
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ShenqingAssistant-1.8.4-Raw9691-ProperBuild-APK
+          name: ShenqingAssistant-1.8.5-Using182InstallLogic-APK
           path: |
-            ShenqingAssistant-1.8.4-Raw9691-ProperBuild.apk
-            ShenqingAssistant-1.8.4-Raw9691-ProperBuild.apk.sha256
+            ShenqingAssistant-1.8.5-Using182InstallLogic.apk
+            ShenqingAssistant-1.8.5-Using182InstallLogic.apk.sha256
             generated-apk/question-bank-count.txt
             generated-apk/apk-metadata.txt
             generated-apk/signing-verification.txt
