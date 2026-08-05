@@ -14,9 +14,9 @@ permissions:
 
 jobs:
   build:
-    name: Build 深情助手 1.8.3 最新题库查看版
+    name: Build 深情助手 1.8.4 原始9691题库正式安装版
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
 
     steps:
       - name: Checkout source
@@ -28,13 +28,13 @@ jobs:
         shell: bash
         run: |
           mkdir -p generated-apk
-          printf 'run_id=%s\ncommit=%s\nartifact=ShenqingAssistant-1.8.3-LatestBank-Viewer-APK\n' \
+          printf 'run_id=%s\ncommit=%s\nartifact=ShenqingAssistant-1.8.4-Raw9691-ProperBuild-APK\n' \
             "$GITHUB_RUN_ID" "$GITHUB_SHA" > generated-apk/manifest.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add generated-apk/manifest.txt
           if ! git diff --cached --quiet; then
-            git commit -m "Record 深情助手 1.8.3 build run"
+            git commit -m "Record 深情助手 1.8.4 build run"
             git pull --rebase origin ${GITHUB_REF_NAME}
             git push origin HEAD:${GITHUB_REF_NAME}
           fi
@@ -91,34 +91,45 @@ jobs:
               path.write_text(text, encoding='utf-8')
           PY
 
-      - name: Merge latest question bank and add viewer
+      - name: Add viewer and exact uploaded raw question bank
         shell: bash
         run: |
-          python3 tools/update_question_bank_183.py
           python3 tools/patch_question_bank_viewer_183.py
+          python3 tools/patch_raw_question_bank_184.py
           cat generated-apk/question-bank-count.txt
-          BANK_COUNT=$(wc -l < app/src/main/assets/questions.jsonl)
-          if [ "$BANK_COUNT" -lt 2000 ]; then
-            echo "合并后的去重题库数量异常：$BANK_COUNT" >&2
+
+          BANK_COUNT=$(grep -cve '^$' app/src/main/assets/questions.jsonl)
+          if [ "$BANK_COUNT" -ne 9691 ]; then
+            echo "题库记录数异常：$BANK_COUNT" >&2
             exit 1
           fi
+          BANK_SHA=$(sha256sum app/src/main/assets/questions.jsonl | awk '{print $1}')
+          if [ "$BANK_SHA" != "33b8057b19c24680ac7ceb32c55637ec931c367d64660536fb0b653d80448d11" ]; then
+            echo "题库原文件 SHA256 不一致：$BANK_SHA" >&2
+            exit 1
+          fi
+
           python3 - <<'PY'
           import json
+          from collections import Counter
           from pathlib import Path
-          path = Path('app/src/main/assets/questions.jsonl')
-          count = 0
-          for line in path.read_text(encoding='utf-8').splitlines():
-              if not line.strip():
-                  continue
-              item = json.loads(line)
-              assert isinstance(item.get('q'), str) and item['q'].strip()
-              assert isinstance(item.get('a'), list) and item['a']
-              count += 1
-          assert count >= 2000
-          print('Validated merged question bank:', count)
+          lines = [line for line in Path('app/src/main/assets/questions.jsonl').read_text(encoding='utf-8').splitlines() if line.strip()]
+          assert len(lines) == 9691
+          records = [json.loads(line) for line in lines]
+          distribution = Counter(str(item.get('ans', '')).upper() for item in records)
+          assert distribution['A'] == 9616
+          assert distribution['B'] == 30
+          assert distribution['C'] == 23
+          assert distribution['D'] == 21
+          assert distribution[''] == 1
+          unique_questions = len({item['q'] for item in records})
+          assert unique_questions < len(records), '重复题目没有被保留'
+          for code, index in [('B', 1), ('C', 2), ('D', 3)]:
+              assert any(item.get('ans') == code and len(item.get('a', [])) > index and item['a'][index] for item in records)
+          print('Validated exact raw bank:', len(records), 'records,', unique_questions, 'unique questions, duplicates preserved')
           PY
 
-      - name: Verify unchanged features and viewer
+      - name: Verify unchanged features and raw-answer logic
         shell: bash
         run: |
           grep -q 'QUIZ_ROI_FAST_V182' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
@@ -132,6 +143,10 @@ jobs:
           grep -q 'android:name=".QuestionBankViewerActivity"' app/src/main/AndroidManifest.xml
           grep -q 'class QuizRegionOverlayService' app/src/main/java/com/ruisi/changanmatch/QuizRegionOverlayService.java
           grep -q 'android:name=".QuizRegionOverlayService"' app/src/main/AndroidManifest.xml
+          grep -q '正确答案由 ans 字段决定' app/src/main/java/com/ruisi/changanmatch/QuestionBank.java
+          grep -q '保持原始9691条记录' app/src/main/java/com/ruisi/changanmatch/QuestionBankViewerActivity.java
+          grep -q '9691' app/src/main/java/com/ruisi/changanmatch/MainActivity.java
+          grep -q '9691' app/src/main/java/com/ruisi/changanmatch/QuizActivity.java
           grep -q 'addTabButton(tabs, "答题器"' app/src/main/java/com/ruisi/changanmatch/MainActivity.java
           if grep -q '当前版本只保留答题器和卡密' app/src/main/java/com/ruisi/changanmatch/MainActivity.java; then
             echo '首页修改说明仍然存在' >&2
@@ -150,33 +165,48 @@ jobs:
         shell: bash
         run: |
           set +e
-          gradle --no-daemon --stacktrace clean assembleDebug > generated-apk/build-1.8.3.log 2>&1
+          gradle --no-daemon --stacktrace clean assembleDebug > generated-apk/build-1.8.4.log 2>&1
           CODE=$?
-          tail -n 460 generated-apk/build-1.8.3.log > generated-apk/build-1.8.3-tail.log
+          tail -n 500 generated-apk/build-1.8.4.log > generated-apk/build-1.8.4-tail.log
           if [ "$CODE" -ne 0 ]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add generated-apk/build-1.8.3-tail.log generated-apk/question-bank-count.txt
-            git commit -m "Save 深情助手 1.8.3 build error" || true
+            git add generated-apk/build-1.8.4-tail.log generated-apk/question-bank-count.txt
+            git commit -m "Save 深情助手 1.8.4 build error" || true
             git pull --rebase origin ${GITHUB_REF_NAME}
             git push origin HEAD:${GITHUB_REF_NAME}
             exit "$CODE"
           fi
 
+      - name: Verify APK package version and signature
+        shell: bash
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          test -f "$APK"
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          "$BUILD_TOOLS/aapt" dump badging "$APK" | head -n 12 | tee generated-apk/apk-metadata.txt
+          grep -q "package: name='com.ruisi.changanmatch'" generated-apk/apk-metadata.txt
+          grep -q "versionCode='20'" generated-apk/apk-metadata.txt
+          grep -q "versionName='1.8.4'" generated-apk/apk-metadata.txt
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK" | tee generated-apk/signing-verification.txt
+          grep -q 'Verified using v1 scheme' generated-apk/signing-verification.txt
+          grep -q 'Verified using v2 scheme' generated-apk/signing-verification.txt
+
       - name: Prepare downloadable APK
         shell: bash
         run: |
-          test -f app/build/outputs/apk/debug/app-debug.apk
-          cp app/build/outputs/apk/debug/app-debug.apk ShenqingAssistant-1.8.3-LatestBank-Viewer.apk
-          sha256sum ShenqingAssistant-1.8.3-LatestBank-Viewer.apk > ShenqingAssistant-1.8.3-LatestBank-Viewer.apk.sha256
+          cp app/build/outputs/apk/debug/app-debug.apk ShenqingAssistant-1.8.4-Raw9691-ProperBuild.apk
+          sha256sum ShenqingAssistant-1.8.4-Raw9691-ProperBuild.apk > ShenqingAssistant-1.8.4-Raw9691-ProperBuild.apk.sha256
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ShenqingAssistant-1.8.3-LatestBank-Viewer-APK
+          name: ShenqingAssistant-1.8.4-Raw9691-ProperBuild-APK
           path: |
-            ShenqingAssistant-1.8.3-LatestBank-Viewer.apk
-            ShenqingAssistant-1.8.3-LatestBank-Viewer.apk.sha256
+            ShenqingAssistant-1.8.4-Raw9691-ProperBuild.apk
+            ShenqingAssistant-1.8.4-Raw9691-ProperBuild.apk.sha256
             generated-apk/question-bank-count.txt
+            generated-apk/apk-metadata.txt
+            generated-apk/signing-verification.txt
           if-no-files-found: error
           retention-days: 30
