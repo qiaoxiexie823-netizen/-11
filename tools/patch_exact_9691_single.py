@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import lzma
+import re
 
 import patch_raw_question_bank_184 as base
 
@@ -70,6 +71,25 @@ def load_exact_raw_bank_single() -> bytes:
     return raw
 
 
+def remove_homepage_change_note() -> None:
+    path = Path("app/src/main/java/com/ruisi/changanmatch/MainActivity.java")
+    text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+    pattern = re.compile(
+        r'\n\s*TextView note = text\(\n'
+        r'\s*"当前版本只保留答题器和卡密，已取消消消乐入口。错题记录仅保存在本机，不上传服务器。",\n'
+        r'\s*13, TEXT_MUTED\);\n'
+        r'\s*note\.setGravity\(Gravity\.CENTER\);\n'
+        r'\s*note\.setPadding\(dp\(5\), dp\(10\), dp\(5\), 0\);\n'
+        r'\s*card\.addView\(note, fullWidth\(\)\);\n',
+        re.MULTILINE,
+    )
+    text, changes = pattern.subn("\n", text, count=1)
+    if changes == 0 and "当前版本只保留答题器和卡密" in text:
+        raise RuntimeError("首页修改说明删除失败")
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
 if __name__ == "__main__":
     base.load_exact_raw_bank = load_exact_raw_bank_single
     base.main()
+    remove_homepage_change_note()
