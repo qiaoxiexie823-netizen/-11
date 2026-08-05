@@ -15,14 +15,14 @@ DISPLAY_FILES = [
     ROOT / "QuizActivity.java",
     ROOT / "QuizScreenCaptureService.java",
 ]
-EXPECTED_PARTS = 9
+EXPECTED_PARTS = 7
 EXPECTED_RECORDS = 9691
 EXPECTED_SHA256 = "33b8057b19c24680ac7ceb32c55637ec931c367d64660536fb0b653d80448d11"
 PLACEHOLDER = "题库文件未提供答案"
 
 
 def load_exact_raw_bank() -> bytes:
-    parts = [Path(f"tools/raw_9691_184_xz_part{index:02d}.b64")
+    parts = [Path(f"tools/raw_9691_184_v2_part{index:02d}.b64")
              for index in range(EXPECTED_PARTS)]
     missing = [str(path) for path in parts if not path.exists()]
     if missing:
