@@ -1,3 +1,3 @@
-run_id=30975439380
-commit=49e421890869d20d1d7e7d15814e3b3dfa0c1618
+run_id=30975474120
+commit=d8aba7bb7430273796b45bc4c41f685eecdb41e1
 artifact=ShenqingAssistant-1.8.4-Raw9691-ProperBuild-APK
