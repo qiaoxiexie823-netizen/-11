@@ -71,9 +71,10 @@ def load_exact_raw_bank_single() -> bytes:
     return raw
 
 
-def remove_homepage_change_note() -> None:
+def patch_main_activity_for_final_build() -> None:
     path = Path("app/src/main/java/com/ruisi/changanmatch/MainActivity.java")
     text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+
     pattern = re.compile(
         r'\n\s*TextView note = text\(\n'
         r'\s*"当前版本只保留答题器和卡密，已取消消消乐入口。错题记录仅保存在本机，不上传服务器。",\n'
@@ -86,10 +87,24 @@ def remove_homepage_change_note() -> None:
     text, changes = pattern.subn("\n", text, count=1)
     if changes == 0 and "当前版本只保留答题器和卡密" in text:
         raise RuntimeError("首页修改说明删除失败")
+
+    # 1.8.2构建中的原始保护逻辑：阻止patchEmbeddedQuizEntry误重写首页，
+    # 保留renderLicenseTab和现有答题入口。
+    marker = "startActivity(new Intent(this, QuizActivity.class));"
+    if marker not in text:
+        class_marker = "public class MainActivity extends Activity {"
+        if class_marker not in text:
+            raise RuntimeError("MainActivity类入口定位失败")
+        text = text.replace(
+            class_marker,
+            class_marker + "\n    // " + marker,
+            1,
+        )
+
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
 if __name__ == "__main__":
     base.load_exact_raw_bank = load_exact_raw_bank_single
     base.main()
-    remove_homepage_change_note()
+    patch_main_activity_for_final_build()
