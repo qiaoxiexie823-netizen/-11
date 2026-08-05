@@ -1,3 +1,3 @@
-run_id=30992035268
-commit=d41ab6221780af4848f60a2621f4ff4da0959574
+run_id=30992159797
+commit=da71cd194ca7477a1c8dc88ba90eb1dfbd9984ba
 artifact=ShenqingAssistant-1.8.5-Using182InstallLogic-APK
