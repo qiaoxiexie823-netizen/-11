@@ -8,16 +8,25 @@ import lzma
 
 import patch_raw_question_bank_184 as base
 
+EXPECTED_PARTS = 8
 EXPECTED_RECORDS = 9691
 EXPECTED_SHA256 = "33b8057b19c24680ac7ceb32c55637ec931c367d64660536fb0b653d80448d11"
 
 
 def load_exact_raw_bank_single() -> bytes:
-    source = Path("tools/raw_9691_exact_single.b64")
-    if not source.exists():
-        raise RuntimeError("缺少原始9691题库压缩文件")
+    parts = [
+        Path(f"tools/raw_9691_exact_part{index:02d}.b64")
+        for index in range(EXPECTED_PARTS)
+    ]
+    missing = [str(path) for path in parts if not path.exists()]
+    if missing:
+        raise RuntimeError("缺少原始9691题库分片：" + ", ".join(missing))
 
-    raw = lzma.decompress(base64.b64decode(source.read_text(encoding="utf-8").strip()))
+    encoded = "".join(
+        path.read_text(encoding="utf-8").strip()
+        for path in parts
+    )
+    raw = lzma.decompress(base64.b64decode(encoded))
     digest = hashlib.sha256(raw).hexdigest()
     if digest != EXPECTED_SHA256:
         raise RuntimeError(f"题库SHA256不一致：{digest}")
@@ -50,7 +59,11 @@ def load_exact_raw_bank_single() -> bytes:
             "duplicates=preserved",
             "order=preserved",
             f"sha256={digest}",
-            "answer_distribution=" + json.dumps(distribution, ensure_ascii=False, sort_keys=True),
+            "answer_distribution=" + json.dumps(
+                distribution,
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
         ]) + "\n",
         encoding="utf-8",
     )
