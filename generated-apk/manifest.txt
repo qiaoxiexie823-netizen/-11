@@ -1,3 +1,3 @@
-run_id=30973741806
-commit=f07034ad604997ab30bf7e7e5948c1727ae1f018
+run_id=30973805483
+commit=dc4a98bad80e513dcf2a715d3368138bb221a9c7
 artifact=ShenqingAssistant-1.8.3-LatestBank-Viewer-APK
