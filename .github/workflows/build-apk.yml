@@ -59,7 +59,6 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      # 完整复用1.8.2已成功安装版本的补丁顺序与源码编译方式。
       - name: Apply proven 1.8.2 quiz patches
         shell: bash
         run: |
@@ -92,23 +91,22 @@ jobs:
               path.write_text(text, encoding='utf-8')
           PY
 
-      - name: Add question-bank viewer and stable raw 9691 bank
+      - name: Add viewer and exact uploaded 9691 bank
         shell: bash
         run: |
           python3 tools/patch_question_bank_viewer_183.py
-
-          # 使用已成功生成1.8.3题库包时的稳定9分片读取程序，避开后续损坏分片。
-          for index in 00 01 02 03 04 05 06 07 08; do
-            test -f "tools/raw_9691_184_xz_part${index}.b64"
-          done
-          git show 391cd38ec3898e60eb3586cfa5992b5f5432640b:tools/patch_raw_question_bank_184.py \
-            > /tmp/patch_raw_question_bank_184_stable.py
-          python3 /tmp/patch_raw_question_bank_184_stable.py
+          python3 tools/patch_exact_9691_single.py
 
           BANK_COUNT=$(grep -cve '^$' app/src/main/assets/questions.jsonl)
-          test "$BANK_COUNT" -eq 9691
+          if [ "$BANK_COUNT" -ne 9691 ]; then
+            echo "题库记录数异常：$BANK_COUNT" >&2
+            exit 1
+          fi
           BANK_SHA=$(sha256sum app/src/main/assets/questions.jsonl | awk '{print $1}')
-          test "$BANK_SHA" = "33b8057b19c24680ac7ceb32c55637ec931c367d64660536fb0b653d80448d11"
+          if [ "$BANK_SHA" != "33b8057b19c24680ac7ceb32c55637ec931c367d64660536fb0b653d80448d11" ]; then
+            echo "题库SHA256不一致：$BANK_SHA" >&2
+            exit 1
+          fi
           cat generated-apk/question-bank-count.txt
 
       - name: Set real internal APK version
@@ -161,7 +159,6 @@ jobs:
             exit 1
           fi
 
-      # 与1.8.2相同：直接由Gradle assembleDebug生成，不修改、不重签、不二次封装成品APK。
       - name: Build APK using 1.8.2 install logic
         shell: bash
         run: |
