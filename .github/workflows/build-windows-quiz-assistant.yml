@@ -7,6 +7,7 @@ on:
     paths:
       - "windows-assistant/**"
       - "app/src/main/assets/questions.jsonl"
+      - "tools/raw_9691_exact_part*.b64"
       - ".github/workflows/build-windows-quiz-assistant.yml"
 
 permissions:
@@ -30,12 +31,12 @@ jobs:
           @"
           run_id=$env:GITHUB_RUN_ID
           commit=$env:GITHUB_SHA
-          artifact=Shenqing-PC-Quiz-Assistant-2.1.1-NumPyFix-EXE
+          artifact=Shenqing-PC-Quiz-Assistant-2.1.2-9691Bank-EXE
           "@ | Set-Content -Encoding UTF8 generated-pc/manifest.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add generated-pc/manifest.txt
-          git commit -m "Record Windows quiz assistant 2.1.1 build run" 2>$null
+          git commit -m "Record Windows quiz assistant 2.1.2 build run" 2>$null
           if ($LASTEXITCODE -eq 0) {
             git pull --rebase origin $env:GITHUB_REF_NAME
             git push origin "HEAD:$env:GITHUB_REF_NAME"
@@ -60,26 +61,41 @@ jobs:
           python windows-assistant/patch_numpy_ocr_fix.py
           Select-String -Path windows-assistant/main.py -Pattern "raw_texts" -Quiet | Out-Null
           if (!$?) { throw "NumPy OCR fix was not applied" }
-          Select-String -Path windows-assistant/main.py -Pattern "2.1.1" -Quiet | Out-Null
-          if (!$?) { throw "Version patch was not applied" }
 
-      - name: Verify question bank and source
+      - name: Apply exact 9691 question bank
         shell: pwsh
         run: |
+          python windows-assistant/patch_question_bank_9691.py
           $count = (Get-Content app/src/main/assets/questions.jsonl | Measure-Object -Line).Lines
-          if ($count -lt 3600) { throw "Question bank is incomplete: $count" }
+          if ($count -ne 9691) { throw "Question bank count mismatch: $count" }
+          $sha = (Get-FileHash app/src/main/assets/questions.jsonl -Algorithm SHA256).Hash.ToLower()
+          if ($sha -ne "33b8057b19c24680ac7ceb32c55637ec931c367d64660536fb0b653d80448d11") {
+            throw "Question bank SHA256 mismatch: $sha"
+          }
+          Select-String -Path windows-assistant/main.py -Pattern 'APP_VERSION = "2.1.2"' -Quiet | Out-Null
+          if (!$?) { throw "Version 2.1.2 was not applied" }
+          Select-String -Path windows-assistant/main.py -Pattern 'item.get\("ans", "A"\)' -Quiet | Out-Null
+          if (!$?) { throw "Correct-answer ans field loader is missing" }
+          Select-String -Path windows-assistant/main.py -Pattern "9691道本地题库" -Quiet | Out-Null
+          if (!$?) { throw "9691 UI label is missing" }
+
+      - name: Verify source and dependencies
+        shell: pwsh
+        run: |
           python -c "import rapidocr, onnxruntime, cv2, mss, cryptography, rapidfuzz; print('imports ok')"
           python -m py_compile windows-assistant/main.py
           Select-String -Path windows-assistant/main.py -Pattern "稳定自动点击" -Quiet | Out-Null
           if (!$?) { throw "Three-mode UI is missing" }
           Select-String -Path windows-assistant/main.py -Pattern "OPTION_CENTERS" -Quiet | Out-Null
           if (!$?) { throw "Answer click calibration is missing" }
+          Select-String -Path windows-assistant/main.py -Pattern "raw_texts" -Quiet | Out-Null
+          if (!$?) { throw "NumPy-safe OCR parsing is missing" }
 
       - name: Build portable EXE
         shell: pwsh
         run: |
           pyinstaller --noconfirm --clean --onefile --windowed `
-            --name "ShenqingPCQuizAssistant-2.1.1" `
+            --name "ShenqingPCQuizAssistant-2.1.2" `
             --add-data "app/src/main/assets/questions.jsonl;." `
             --collect-all rapidocr `
             --collect-all onnxruntime `
@@ -90,16 +106,16 @@ jobs:
       - name: Prepare download
         shell: pwsh
         run: |
-          if (!(Test-Path "dist/ShenqingPCQuizAssistant-2.1.1.exe")) { throw "EXE was not generated" }
-          Copy-Item "dist/ShenqingPCQuizAssistant-2.1.1.exe" "深情电脑答题助手-2.1.1识别修复版.exe"
-          Get-FileHash "深情电脑答题助手-2.1.1识别修复版.exe" -Algorithm SHA256 | Format-List | Out-File -Encoding UTF8 "深情电脑答题助手-2.1.1识别修复版.exe.sha256.txt"
+          if (!(Test-Path "dist/ShenqingPCQuizAssistant-2.1.2.exe")) { throw "EXE was not generated" }
+          Copy-Item "dist/ShenqingPCQuizAssistant-2.1.2.exe" "深情电脑答题助手-2.1.2-9691题库版.exe"
+          Get-FileHash "深情电脑答题助手-2.1.2-9691题库版.exe" -Algorithm SHA256 | Format-List | Out-File -Encoding UTF8 "深情电脑答题助手-2.1.2-9691题库版.exe.sha256.txt"
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Shenqing-PC-Quiz-Assistant-2.1.1-NumPyFix-EXE
+          name: Shenqing-PC-Quiz-Assistant-2.1.2-9691Bank-EXE
           path: |
-            深情电脑答题助手-2.1.1识别修复版.exe
-            深情电脑答题助手-2.1.1识别修复版.exe.sha256.txt
+            深情电脑答题助手-2.1.2-9691题库版.exe
+            深情电脑答题助手-2.1.2-9691题库版.exe.sha256.txt
           if-no-files-found: error
           retention-days: 30
