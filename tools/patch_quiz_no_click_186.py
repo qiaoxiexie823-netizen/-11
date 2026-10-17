@@ -33,6 +33,10 @@ def main():
     s=s.replace('启动后切回游戏，助手会自动识别题目并显示答案。开启自动点击时会点击正确选项；关闭自动点击后为手动模式，答错时会识别游戏公布的正确选项并保存到本机学习题库。','启动后切回游戏，助手识别题目并显示答案，请手动点击选项。答错时会识别游戏公布的正确选项并保存到本机学习题库。')
     s=s.replace('自动点击只会在题库匹配成功且屏幕中识别到答案文字时执行；匹配不确定或找不到答案选项时不会点击。','仅提示版：请自行点击答案和翻页，无需开启无障碍服务。')
     s=s.replace('关闭自动点击后，答错页面','答错页面');p.write_text(s)
+    p=ROOT/'MainActivity.java';text=p.read_text()
+    text=text.replace('支持悬浮显示答案和自动点击。手动点击模式下，','支持悬浮显示答案，请手动点击选项。')
+    text=text.replace('屏幕识别、悬浮窗及无障碍自动点击功能','屏幕识别与悬浮窗提示功能')
+    p.write_text(text)
     p=ROOT/'QuizScreenCaptureService.java';s=p.read_text()
     for marker in ['    private boolean tryAutoPageAction(','    private void tryAutoClickAnswer(','    private int findAnswerOptionIndex(','    private AnswerTarget findAnswerTarget(','    private double answerLineScore(','    private static final class AnswerTarget {']:
         s=remove_block(s,marker)

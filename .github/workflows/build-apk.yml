@@ -137,6 +137,7 @@ jobs:
       - name: Verify retained functions
         shell: bash
         run: |
+          set -x
           grep -q 'QUIZ_ROI_FAST_V182' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
           grep -q 'OCR_INTERVAL_MS = 280L' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
           grep -q 'loadRecognitionRegion' app/src/main/java/com/ruisi/changanmatch/QuizScreenCaptureService.java
@@ -151,7 +152,7 @@ jobs:
           grep -q '正确答案由 ans 字段决定' app/src/main/java/com/ruisi/changanmatch/QuestionBank.java
           grep -q '保持原始9691条记录' app/src/main/java/com/ruisi/changanmatch/QuestionBankViewerActivity.java
           grep -q '9691' app/src/main/java/com/ruisi/changanmatch/MainActivity.java
-          grep -q '9691' app/src/main/java/com/ruisi/changanmatch/QuizActivity.java
+          grep -Fq 'questionBank.size()' app/src/main/java/com/ruisi/changanmatch/QuizActivity.java
           grep -q 'addTabButton(tabs, "答题器"' app/src/main/java/com/ruisi/changanmatch/MainActivity.java
           if grep -q '当前版本只保留答题器和卡密' app/src/main/java/com/ruisi/changanmatch/MainActivity.java; then
             echo '首页修改说明仍然存在' >&2
