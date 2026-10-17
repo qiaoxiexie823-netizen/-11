@@ -1,9 +1,9 @@
-name: Build Shenqing Assistant APK
+name: Build Shenqing Manual Answer APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "manual-answer-1.8.6" ]
     paths-ignore:
       - "README.md"
       - "使用说明.txt"
@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build:
-    name: Build 深情助手 1.8.5（沿用1.8.2安装逻辑）
+    name: Build 深情助手 1.8.6-no-click（沿用1.8.2安装逻辑）
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -28,13 +28,13 @@ jobs:
         shell: bash
         run: |
           mkdir -p generated-apk
-          printf 'run_id=%s\ncommit=%s\nartifact=ShenqingAssistant-1.8.5-Using182InstallLogic-APK\n' \
+          printf 'run_id=%s\ncommit=%s\nartifact=ShenqingAssistant-1.8.6-no-click-ManualAnswer-APK\n' \
             "$GITHUB_RUN_ID" "$GITHUB_SHA" > generated-apk/manifest.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add generated-apk/manifest.txt
           if ! git diff --cached --quiet; then
-            git commit -m "Record 深情助手 1.8.5 build run"
+            git commit -m "Record 深情助手 1.8.6-no-click build run"
             git pull --rebase origin ${GITHUB_REF_NAME}
             git push origin HEAD:${GITHUB_REF_NAME}
           fi
@@ -109,6 +109,10 @@ jobs:
           fi
           cat generated-apk/question-bank-count.txt
 
+      - name: Remove automatic clicking and accessibility service
+        shell: bash
+        run: python3 tools/patch_quiz_no_click_186.py
+
       - name: Set real internal APK version
         shell: bash
         run: |
@@ -118,14 +122,14 @@ jobs:
 
           path = Path('app/build.gradle')
           text = path.read_text(encoding='utf-8')
-          text, code_changes = re.subn(r'versionCode\s+\d+', 'versionCode 21', text, count=1)
-          text, name_changes = re.subn(r'versionName\s+"[^"]+"', 'versionName "1.8.5"', text, count=1)
+          text, code_changes = re.subn(r'versionCode\s+\d+', 'versionCode 22', text, count=1)
+          text, name_changes = re.subn(r'versionName\s+"[^"]+"', 'versionName "1.8.6-no-click"', text, count=1)
           if code_changes != 1 or name_changes != 1:
               raise RuntimeError('无法写入真实APK内部版本号')
           path.write_text(text, encoding='utf-8')
           PY
-          grep -q 'versionCode 21' app/build.gradle
-          grep -q 'versionName "1.8.5"' app/build.gradle
+          grep -q 'versionCode 22' app/build.gradle
+          grep -q 'versionName "1.8.6-no-click"' app/build.gradle
 
       - name: Verify retained functions
         shell: bash
@@ -163,14 +167,14 @@ jobs:
         shell: bash
         run: |
           set +e
-          gradle --no-daemon --stacktrace clean assembleDebug > generated-apk/build-1.8.5.log 2>&1
+          gradle --no-daemon --stacktrace clean assembleDebug > generated-apk/build-1.8.6-no-click.log 2>&1
           CODE=$?
-          tail -n 500 generated-apk/build-1.8.5.log > generated-apk/build-1.8.5-tail.log
+          tail -n 500 generated-apk/build-1.8.6-no-click.log > generated-apk/build-1.8.6-no-click-tail.log
           if [ "$CODE" -ne 0 ]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add generated-apk/build-1.8.5-tail.log generated-apk/question-bank-count.txt
-            git commit -m "Save 深情助手 1.8.5 build error" || true
+            git add generated-apk/build-1.8.6-no-click-tail.log generated-apk/question-bank-count.txt
+            git commit -m "Save 深情助手 1.8.6-no-click build error" || true
             git pull --rebase origin ${GITHUB_REF_NAME}
             git push origin HEAD:${GITHUB_REF_NAME}
             exit "$CODE"
@@ -186,25 +190,25 @@ jobs:
           "$BUILD_TOOLS/zipalign" -c -v 4 "$APK" >/dev/null
           "$BUILD_TOOLS/aapt" dump badging "$APK" | head -n 12 | tee generated-apk/apk-metadata.txt
           grep -q "package: name='com.ruisi.changanmatch'" generated-apk/apk-metadata.txt
-          grep -q "versionCode='21'" generated-apk/apk-metadata.txt
-          grep -q "versionName='1.8.5'" generated-apk/apk-metadata.txt
+          grep -q "versionCode='22'" generated-apk/apk-metadata.txt
+          grep -q "versionName='1.8.6-no-click'" generated-apk/apk-metadata.txt
           "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK" \
             | tee generated-apk/signing-verification.txt
 
       - name: Prepare downloadable APK
         shell: bash
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk ShenqingAssistant-1.8.5-Using182InstallLogic.apk
-          sha256sum ShenqingAssistant-1.8.5-Using182InstallLogic.apk \
-            > ShenqingAssistant-1.8.5-Using182InstallLogic.apk.sha256
+          cp app/build/outputs/apk/debug/app-debug.apk ShenqingAssistant-1.8.6-no-click-ManualAnswer.apk
+          sha256sum ShenqingAssistant-1.8.6-no-click-ManualAnswer.apk \
+            > ShenqingAssistant-1.8.6-no-click-ManualAnswer.apk.sha256
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ShenqingAssistant-1.8.5-Using182InstallLogic-APK
+          name: ShenqingAssistant-1.8.6-no-click-ManualAnswer-APK
           path: |
-            ShenqingAssistant-1.8.5-Using182InstallLogic.apk
-            ShenqingAssistant-1.8.5-Using182InstallLogic.apk.sha256
+            ShenqingAssistant-1.8.6-no-click-ManualAnswer.apk
+            ShenqingAssistant-1.8.6-no-click-ManualAnswer.apk.sha256
             generated-apk/question-bank-count.txt
             generated-apk/apk-metadata.txt
             generated-apk/signing-verification.txt
