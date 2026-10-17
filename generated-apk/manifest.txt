@@ -1,3 +1,3 @@
-run_id=39005959418
-commit=8730a221e3d2cada4b82f8051dc632b862f4c30d
+run_id=39006110813
+commit=a5e3e217ed022a18a2ab7f75601c2872b7ed822c
 artifact=ShenqingAssistant-1.8.6-no-click-ManualAnswer-APK
